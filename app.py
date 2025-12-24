@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (最優先で文字色を固定) ---
+# --- 2. CSSデザイン (黒文字を絶対強制) ---
 st.markdown("""
     <style>
     /* 全体背景 */
@@ -31,23 +31,23 @@ st.markdown("""
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
 
-    /* サイドバーの歯車アイコンを白く */
+    /* 歯車アイコンを白く */
     [data-testid="stSidebar"] img { filter: brightness(0) invert(1); }
 
-    /* Excelボタン: テキスト黒 */
+    /* Excelボタン: 背景ゴールド・テキスト黒 */
     .stDownloadButton>button {
         width: 100%; border-radius: 5px; height: 3.5em;
         background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
     }
-    .stDownloadButton>button * { color: #000000 !important; }
+    .stDownloadButton>button p { color: #000000 !important; }
 
-    /* 分析ボタン: テキスト白 */
+    /* 生成ボタン: 背景ゴールド・テキスト白 */
     .stButton>button {
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
     }
 
-    /* タイトル（黄色背景・黒文字）を絶対強制 */
+    /* タイトル（黄色背景・黒文字）を強制 */
     .plan-title {
         background-color: #ffff00 !important;
         padding: 6px 12px !important;
@@ -55,12 +55,11 @@ st.markdown("""
         display: inline-block !important;
         border-radius: 2px !important;
         margin-bottom: 20px !important;
-        color: #000000 !important; /* 黒文字 */
+        color: #000000 !important; /* 絶対黒 */
         font-weight: bold !important;
     }
-    .plan-title * { color: #000000 !important; }
 
-    /* ①〜⑥見出し（白背景・黒文字）を絶対強制 */
+    /* ①〜⑥見出し（白背景・黒文字）を強制 */
     .white-block-heading {
         background-color: #ffffff !important;
         padding: 5px 15px !important;
@@ -68,22 +67,21 @@ st.markdown("""
         border-radius: 2px !important;
         margin-top: 25px !important;
         margin-bottom: 15px !important;
-        color: #000000 !important; /* 黒文字 */
+        color: #000000 !important; /* 絶対黒 */
         font-weight: bold !important;
         font-size: 1.15em !important;
     }
-    .white-block-heading * { color: #000000 !important; }
 
     /* 下線キーワード */
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
-
+    
     /* レポート容器 */
     .report-box {
         padding: 30px; border-radius: 10px; background-color: #262626;
         box-shadow: 0 4px 15px rgba(0,0,0,0.6); margin-bottom: 25px; line-height: 1.8;
     }
 
-    /* テーブルスタイル */
+    /* テーブルデザイン */
     div[data-testid="stTable"] table { background-color: #1e1e1e !important; color: white !important; border: 1px solid #444; width: 100%; }
     th { color: #D4AF37 !important; background-color: #333 !important; }
     td { color: #ffffff !important; }
@@ -94,7 +92,7 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を白ブロックに（中身の文字色をインラインで黒指定して補強）
+    # ①〜⑥を白背景・黒文字に（インライン指定でさらに補強）
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="white-block-heading" style="color:#000000 !important;">\1\2</span>', text)
     # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
@@ -129,28 +127,17 @@ def generate_ad_plan(site_text, api_key):
         target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
         model = genai.GenerativeModel(target_model)
         
-        # CSV出力をより確実にするためのプロンプト調整
         prompt = f"""
         あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
         
-        【構成】
-        冒頭：Google検索広告プラン：(サイト名)
-        ①サイト解析結果：詳細に記載。
-        ②広告文（DL）：見出し15個
-        ③説明文（DL）：4個
-        ④キーワード（DL）：20個以上
-        ⑤構造化スニペット：2種類以上
-        ⑥コールアウトアセット：8個以上
-
-        【重要：データ書き出し】
-        最後に必ず [DATA_START] と [DATA_END] で囲んで、以下のCSVデータのみを出力してください。
+        【重要ルール】
+        1. 冒頭に「Google検索広告プラン：(サイト名)」を記載。
+        2. ①サイト解析結果、②広告文（DL）、③説明文（DL）、④キーワード（DL）、⑤構造化スニペット、⑥コールアウトアセット の順で作成。
+        3. 回答の最後に、以下のCSVデータを必ず [DATA_START] と [DATA_END] で囲んで出力してください。
         Type,Content,Details,Other1,Other2
-        見出し,(見出し1),,,
-        ... (15個)
-        説明文,(説明文1),,,
-        ... (4個)
-        キーワード,(キーワード),(マッチタイプ),(CPC),(優先度)
-        ... (20個)
+        見出し,(広告見出しを15個書く),,,
+        説明文,(説明文を4個書く),,,
+        キーワード,(キーワード),(マッチタイプ),(推定CPC),(優先度)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
@@ -163,7 +150,8 @@ def generate_ad_plan(site_text, api_key):
 # エラーを回避して表を表示するための関数
 def safe_table_display(df, type_name, col_mapping):
     try:
-        if df is None or df.empty: return False
+        if df is None: return False
+        # Type列を部分一致で検索
         sub_df = df[df['Type'].str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
         
@@ -201,15 +189,14 @@ if st.button("分析＆生成スタート"):
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 結果表示エリア ---
 if st.session_state.ad_result:
-    # 1. データのパース（より確実に）
+    # 1. データのパース
     df_all = None
     if "[DATA_START]" in st.session_state.ad_result:
         try:
             raw_csv = st.session_state.ad_result.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
-            # AIが余計なコードブロック記号を入れる場合を除去
-            raw_csv = raw_csv.replace("```csv", "").replace("```", "").strip()
+            # Markdownのコードブロック記号を除去
+            raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
             df_all = pd.read_csv(io.StringIO(raw_csv))
             df_all.columns = df_all.columns.str.strip()
         except: pass
@@ -239,22 +226,22 @@ if st.session_state.ad_result:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文（見出し15個）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '見出し案'}):
-            st.warning("見出しデータの抽出に失敗しました。下の全体テキストを確認してください。")
+            st.info("※表の自動生成待ち、またはデータ形式の不一致です。")
         
         st.markdown(apply_decoration("③説明文（4個）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}):
-            st.warning("説明文データの抽出に失敗しました。")
+            pass
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
         if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}):
-            st.warning("キーワードデータの抽出に失敗しました。")
+            pass
         
         st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
         if not safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'}):
-            st.warning("スニペットデータの抽出に失敗しました。")
+            pass
 
         st.markdown(apply_decoration("⑥コールアウトアセット"), unsafe_allow_html=True)
         c6 = full_text.split("⑥")[1] if "⑥" in full_text else ""
