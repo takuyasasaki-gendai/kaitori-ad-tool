@@ -8,7 +8,6 @@ import re
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
-from google.api_core import exceptions
 
 # --- 1. 初期設定 ---
 @st.cache_resource
@@ -98,30 +97,75 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        # 無料枠で最も安定している1.5-flashを優先
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         target_model = ""
-        for m_name in ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]:
+        for m_name in ["models/gemini-1.5-flash", "models/gemini-pro"]:
             if m_name in available_models:
                 target_model = m_name
                 break
         if not target_model: target_model = available_models[0]
         
         model = genai.GenerativeModel(target_model)
-        prompt = f"買取広告コンサルとして以下のサイトを分析し、①サイト解析結果、②広告文（DL）、③説明文（DL）、④キーワード（DL）、⑤構造化スニペット、⑥コールアウトアセットを作成してください。冒頭に「Google検索広告プラン：(サイト名)」を、末尾に[DATA_START]CSVデータ[DATA_END]を含めてください。解析サイト：{site_text}"
+        prompt = f"""
+        あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
+        
+        【構成】
+        冒頭：Google検索広告プラン：(サイト名)
+        内容：①サイト解析結果、②広告文（DL）、③説明文（DL）、④キーワード（DL）、⑤構造化スニペット、⑥コールアウトアセット
+        
+        【重要】
+        回答の最後に、以下のCSVデータを必ず含めてください。データの欠落は許されません。
+        [DATA_START]
+        Type,Content,Details,Other1,Other2
+        見出し,(ここに15個の見出しを書く),,,
+        説明文,(ここに4個の説明文を書く),,,
+        キーワード,(キーワード),(マッチタイプ),(CPC),(優先度)
+        スニペット,(種類),(値),,
+        コールアウト,(内容),,,
+        [DATA_END]
+        
+        解析サイト：{site_text}
+        """
         return model.generate_content(prompt).text
-    except exceptions.ResourceExhausted as e:
-        return "ERROR_429: 無料枠の上限に達しました。1分ほど待ってから再度お試しください。"
-    except Exception as e:
-        return f"AI生成エラー: {str(e)}"
+    except Exception as e: return f"AI生成エラー: {str(e)}"
 
-def parse_result_data(text):
+def create_excel_safe(text):
+    """Excel作成時にシートが空にならないよう保護する関数"""
     try:
-        if "[DATA_START]" in text:
-            raw = text.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
-            return pd.read_csv(io.StringIO(raw))
-    except: return None
-    return None
+        if "[DATA_START]" not in text:
+            return None
+        
+        raw = text.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
+        df = pd.read_csv(io.StringIO(raw))
+        
+        # もしデータが読み込めても空なら中断
+        if df.empty:
+            return None
+
+        out = io.BytesIO()
+        # openpyxlで空のシートが作られないよう、各カテゴリが存在するか確認しながら書き込む
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            written_sheets = 0
+            
+            for sheet_name, type_filter in [('②広告文', '見出し'), ('③説明文', '説明文'), ('④キーワード', 'キーワード')]:
+                sub_df = df[df['Type'] == type_filter]
+                if not sub_df.empty:
+                    sub_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                    written_sheets += 1
+            
+            # アセット用（スニペット・コールアウト）
+            asset_df = df[df['Type'].isin(['スニペット', 'コールアウト'])]
+            if not asset_df.empty:
+                asset_df.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
+                written_sheets += 1
+            
+            # 【IndexError対策】1枚もシートが書かれなかった場合、ダミーシートを作成
+            if written_sheets == 0:
+                pd.DataFrame({"Message": ["解析データが見つかりませんでした。再度生成してください。"]}).to_excel(writer, sheet_name="注意")
+        
+        return out.getvalue()
+    except:
+        return None
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
@@ -143,25 +187,19 @@ if st.button("分析＆生成スタート"):
     if url_in:
         with st.spinner("🚀 戦略構築中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
-            res = generate_ad_plan(cleaned, api_key)
-            if "ERROR_429" in res:
-                st.error("⚠️ Google AIの無料枠制限に達しました。30秒〜1分ほど時間を置いてから再度「分析＆生成スタート」を押してください。")
-            else:
-                st.session_state.ad_result = res
-                st.balloons()
+            st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
+            st.balloons()
 
 if st.session_state.ad_result:
-    df_all = parse_result_data(st.session_state.ad_result)
     main_text = st.session_state.ad_result.split("[DATA_START]")[0]
     
-    if df_all is not None:
-        out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            df_all[df_all['Type'] == '見出し'].to_excel(writer, index=False, sheet_name='②広告文')
-            df_all[df_all['Type'] == '説明文'].to_excel(writer, index=False, sheet_name='③説明文')
-            df_all[df_all['Type'] == 'キーワード'].to_excel(writer, index=False, sheet_name='④キーワード')
-            df_all[df_all['Type'].isin(['スニペット', 'コールアウト'])].to_excel(writer, index=False, sheet_name='アセット')
-        st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
+    # Excel生成の実行（安全版）
+    excel_bin = create_excel_safe(st.session_state.ad_result)
+    
+    if excel_bin:
+        st.download_button("📊 Excel形式でダウンロード", data=excel_bin, file_name="ad_strategy.xlsx")
+    else:
+        st.warning("⚠️ Excel用データの抽出に失敗しました。解析結果は以下の画面でご確認ください。")
 
     def get_section_text(full_text, start_num, end_num=None):
         try:
@@ -176,6 +214,14 @@ if st.session_state.ad_result:
 
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
+    # 表データ表示用のパース
+    df_for_table = None
+    if "[DATA_START]" in st.session_state.ad_result:
+        try:
+            raw_csv = st.session_state.ad_result.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
+            df_for_table = pd.read_csv(io.StringIO(raw_csv))
+        except: pass
+
     with tab1:
         content1 = main_text.split("②")[0] if "②" in main_text else main_text
         st.markdown(f'<div class="report-box">{apply_decoration(content1)}</div>', unsafe_allow_html=True)
@@ -187,15 +233,15 @@ if st.session_state.ad_result:
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード（一覧）"), unsafe_allow_html=True)
-        if df_all is not None:
-            kw_df = df_all[df_all['Type'] == 'キーワード'].copy()
+        if df_for_table is not None:
+            kw_df = df_for_table[df_for_table['Type'] == 'キーワード'].copy()
             if not kw_df.empty:
                 kw_df = kw_df.rename(columns={'Content': 'キーワード', 'Details': 'マッチタイプ', 'Other1': '推定CPC', 'Other2': '優先度'})
                 st.table(kw_df[['キーワード', 'マッチタイプ', '推定CPC', '優先度']])
         
         st.markdown(apply_decoration("⑤構造化スニペット（一覧）"), unsafe_allow_html=True)
-        if df_all is not None:
-            snip_df = df_all[df_all['Type'] == 'スニペット'].copy()
+        if df_for_table is not None:
+            snip_df = df_for_table[df_for_table['Type'] == 'スニペット'].copy()
             if not snip_df.empty:
                 snip_df = snip_df.rename(columns={'Content': '種類', 'Details': '値'})
                 st.table(snip_df[['種類', '値']])
