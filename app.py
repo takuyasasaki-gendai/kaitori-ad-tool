@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (背景色を排除し、視認性を最優先) ---
+# --- 2. CSSデザイン (背景色なし・視認性重視) ---
 st.markdown("""
     <style>
     /* 全体背景：黒 */
@@ -31,17 +31,14 @@ st.markdown("""
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
 
-    /* サイドバーの歯車アイコンを白く */
-    [data-testid="stSidebar"] img { filter: brightness(0) invert(1); }
-
     /* Excelボタン: 背景ゴールド・テキスト黒 */
     .stDownloadButton>button {
         width: 100%; border-radius: 5px; height: 3.5em;
         background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
     }
-    .stDownloadButton>button * { color: #000000 !important; }
+    .stDownloadButton>button p { color: #000000 !important; }
 
-    /* 生成ボタン: 背景ゴールド・テキスト白 */
+    /* 分析スタートボタン: 背景ゴールド・テキスト白 */
     .stButton>button {
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
@@ -70,7 +67,7 @@ st.markdown("""
         padding-left: 15px;
     }
 
-    /* 下線キーワード */
+    /* 強み・課題・改善案の下線 */
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
 
     /* レポート容器 */
@@ -94,7 +91,7 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を見出しスタイルに
+    # ①〜⑥を装飾見出しに（背景なし）
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
     # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
@@ -134,7 +131,7 @@ def generate_ad_plan(site_text, api_key):
         
         【構成】
         冒頭：Google検索広告プラン：(サイト名)
-        ①サイト解析結果：強み、課題、改善案を含めて詳細に。
+        ①サイト解析結果：強み、課題、改善案を含めて。
         ②広告文（DL）：見出し15個
         ③説明文（DL）：4個
         ④キーワード（DL）：20個以上
@@ -146,7 +143,7 @@ def generate_ad_plan(site_text, api_key):
         Type,Content,Details,Other1,Other2
         見出し,(内容),,,
         説明文,(内容),,,
-        キーワード,(キーワード),(マッチ),(CPC),(優先)
+        キーワード,(内容),(マッチ),(CPC),(優先)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
@@ -156,11 +153,9 @@ def generate_ad_plan(site_text, api_key):
         return response.text
     except Exception as e: return f"AI生成エラー: {str(e)}"
 
-# エラーを回避して表を表示するための関数
 def safe_table_display(df, type_name, col_mapping):
     try:
         if df is None or df.empty: return False
-        # 「Type」列に含まれるキーワードでフィルタリング
         sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
         
@@ -177,7 +172,8 @@ def safe_table_display(df, type_name, col_mapping):
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    st.image("[https://cdn-icons-png.flaticon.com/512/3524/3524659.png](https://cdn-icons-png.flaticon.com/512/3524/3524659.png)", width=60)
+    # 外部URLを使わず、絵文字で歯車を表示してエラーを回避
+    st.markdown("<h1 style='text-align: center; font-size: 50px;'>⚙️</h1>", unsafe_allow_html=True)
     pwd = st.text_input("パスワード", type="password")
     if pwd != "password":
         if pwd != "": st.error("パスワードが違います")
@@ -195,20 +191,17 @@ if st.button("分析＆生成スタート"):
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 結果表示エリア ---
+# --- 結果表示 ---
 if st.session_state.ad_result:
-    # データの解析
     df_all = None
     if "[DATA_START]" in st.session_state.ad_result:
         try:
             raw_csv = st.session_state.ad_result.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
-            # Markdown記号などの除去
             raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
             df_all = pd.read_csv(io.StringIO(raw_csv))
             df_all.columns = df_all.columns.str.strip()
         except: pass
 
-    # Excelダウンロード
     if df_all is not None:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
@@ -224,7 +217,6 @@ if st.session_state.ad_result:
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        # ①から②の直前まで
         c1 = main_text.split("②")[0] if "②" in main_text else main_text
         st.markdown(apply_decoration(c1), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -233,7 +225,7 @@ if st.session_state.ad_result:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※表の生成に失敗しました。下の全体文章を参照してください。")
+            st.info("※表の生成待ち、またはデータ形式不一致です。下の文章を参照してください。")
         
         st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}):
