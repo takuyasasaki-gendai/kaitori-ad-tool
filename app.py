@@ -23,55 +23,64 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (ブラックテーマへの変更) ---
+# --- 2. CSSデザイン (ブラックテーマ & 白枠見出し) ---
 st.markdown("""
     <style>
-    /* 全体の背景色とテキスト色 */
+    /* 全体の背景色とテキスト色を白に固定 */
     .stApp {
         background-color: #121212;
-        color: #ffffff;
+        color: #ffffff !important;
     }
-    /* サイドバーの背景 */
+    /* すべてのテキストを白に */
+    .stApp p, .stApp span, .stApp div, .stApp li {
+        color: #ffffff !important;
+    }
+    /* サイドバー */
     section[data-testid="stSidebar"] {
         background-color: #1e1e1e !important;
     }
-    /* ボタンデザイン (ゴールド維持) */
+    /* ボタンデザイン */
     .stButton>button {
         width: 100%; border-radius: 5px; height: 3em;
-        background-color: #D4AF37; color: white; border: none; font-weight: bold;
+        background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
     }
-    /* メインタイトル黄色背景 */
+    /* メインタイトル黄色背景（ここは黒文字で視認性を確保） */
     .plan-title {
-        background-color: #ffff00; font-weight: bold; padding: 5px 10px;
+        background-color: #ffff00; font-weight: bold; padding: 5px 12px;
         font-size: 1.3em; display: inline-block; border-radius: 3px;
-        margin-bottom: 15px; color: #000;
+        margin-bottom: 20px; color: #000000 !important;
     }
-    /* ①〜⑥の見出し (赤字・太字・サイズ統一) */
-    .red-heading {
-        color: #ff4b4b; font-weight: bold; font-size: 1.25em;
-        margin-top: 15px; margin-bottom: 10px; display: block;
+    /* ①〜⑥の見出し (白太文字・白枠囲み) */
+    .bordered-heading {
+        color: #ffffff !important;
+        font-weight: bold;
+        font-size: 1.25em;
+        margin-top: 20px;
+        margin-bottom: 15px;
+        padding: 8px 15px;
+        border: 2px solid #ffffff;
+        display: inline-block; /* 枠を文字幅に合わせる */
+        border-radius: 0px;
     }
     /* 強み・課題・改善案の下線 */
-    .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700; }
+    .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
     
-    /* レポートボックス (ダークグレー) */
+    /* レポートボックス */
     .report-box {
-        padding: 25px; border-radius: 10px; background-color: #262626;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.5); margin-bottom: 20px; line-height: 1.7;
-        color: #e0e0e0;
+        padding: 30px; border-radius: 10px; background-color: #262626;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.6); margin-bottom: 25px; line-height: 1.8;
     }
-    /* テーブルのスタイル調整 (ダークモード用) */
-    .stTable, div[data-testid="stTable"] table {
+    /* テーブルスタイル */
+    div[data-testid="stTable"] table {
         background-color: #1e1e1e !important;
         color: white !important;
+        border: 1px solid #444;
     }
-    /* タブのテキスト色 */
-    button[data-baseweb="tab"] p {
-        color: #ccc !important;
-    }
-    button[aria-selected="true"] p {
-        color: #D4AF37 !important;
-    }
+    th { color: #D4AF37 !important; background-color: #333 !important; }
+    /* タブ設定 */
+    button[data-baseweb="tab"] p { color: #888 !important; }
+    button[aria-selected="true"] { border-bottom-color: #D4AF37 !important; }
+    button[aria-selected="true"] p { color: #D4AF37 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -79,8 +88,8 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を赤文字に
-    text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="red-heading">\1\2</span>', text)
+    # ①〜⑥を白枠囲み見出しに置換
+    text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="bordered-heading">\1\2</span>', text)
     # 強み・課題・改善案に下線
     for kw in ["強み", "課題", "改善案"]:
         text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
