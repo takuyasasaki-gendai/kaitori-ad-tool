@@ -36,7 +36,7 @@ st.markdown("""
         filter: brightness(0) invert(1);
     }
 
-    /* ボタン */
+    /* ボタンデザイン */
     .stDownloadButton>button {
         width: 100%; border-radius: 5px; height: 3.5em;
         background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
@@ -112,6 +112,7 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
+        # 利用可能なモデルを自動取得
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
         model = genai.GenerativeModel(target_model)
@@ -123,9 +124,8 @@ def generate_ad_plan(site_text, api_key):
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    # 歯車アイコン（CSSフィルタで白くしています）
+    # 歯車アイコンのみ（Admin Menuタイトルを削除）
     st.image("https://cdn-icons-png.flaticon.com/512/3524/3524659.png", width=60)
-    st.title("Admin Menu")
     pwd = st.text_input("アクセスパスワード", type="password")
     if pwd != "password":
         if pwd != "": st.error("パスワードが違います")
@@ -143,6 +143,7 @@ if st.button("分析＆生成スタート"):
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
+# --- 結果の表示エリア ---
 if st.session_state.ad_result:
     # データのパース
     df_all = None
@@ -168,13 +169,13 @@ if st.session_state.ad_result:
     
     with tab2:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        # ②広告文（表）
+        # ②広告文（表形式）
         st.markdown(apply_decoration("②広告文（見出し15個）"), unsafe_allow_html=True)
         if df_all is not None:
             h_df = df_all[df_all['Type'] == '見出し'].copy()
             st.table(h_df[['Content']].rename(columns={'Content': '見出し案'}))
         
-        # ③説明文（表）
+        # ③説明文（表形式）
         st.markdown(apply_decoration("③説明文（4個）"), unsafe_allow_html=True)
         if df_all is not None:
             d_df = df_all[df_all['Type'] == '説明文'].copy()
@@ -183,13 +184,13 @@ if st.session_state.ad_result:
 
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        # ④キーワード（表）
+        # ④キーワード
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
         if df_all is not None:
             kw_df = df_all[df_all['Type'] == 'キーワード'].copy()
             st.table(kw_df[['Content', 'Details', 'Other1', 'Other2']].rename(columns={'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}))
         
-        # ⑤スニペット（表）
+        # ⑤スニペット
         st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
         if df_all is not None:
             sn_df = df_all[df_all['Type'] == 'スニペット'].copy()
