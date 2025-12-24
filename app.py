@@ -23,15 +23,14 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (ブラックテーマ & 白枠見出し) ---
+# --- 2. CSSデザイン (ブラックテーマ & 白背景黒文字見出し) ---
 st.markdown("""
     <style>
-    /* 全体の背景色とテキスト色を白に固定 */
+    /* 全体の背景色とテキスト色 */
     .stApp {
         background-color: #121212;
         color: #ffffff !important;
     }
-    /* すべてのテキストを白に */
     .stApp p, .stApp span, .stApp div, .stApp li {
         color: #ffffff !important;
     }
@@ -39,28 +38,37 @@ st.markdown("""
     section[data-testid="stSidebar"] {
         background-color: #1e1e1e !important;
     }
-    /* ボタンデザイン */
+    /* Excelダウンロードボタン (背景ゴールド・テキスト黒) */
+    .stDownloadButton>button {
+        width: 100%; border-radius: 5px; height: 3.5em;
+        background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
+    }
+    /* 分析スタートボタン (背景ゴールド・テキスト白) */
     .stButton>button {
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
     }
-    /* メインタイトル黄色背景（ここは黒文字で視認性を確保） */
+    /* メインタイトル黄色背景 (テキスト黒) */
     .plan-title {
-        background-color: #ffff00; font-weight: bold; padding: 5px 12px;
-        font-size: 1.3em; display: inline-block; border-radius: 3px;
+        background-color: #ffff00; font-weight: bold; padding: 6px 12px;
+        font-size: 1.3em; display: inline-block; border-radius: 2px;
         margin-bottom: 20px; color: #000000 !important;
     }
-    /* ①〜⑥の見出し (白太文字・白枠囲み) */
-    .bordered-heading {
-        color: #ffffff !important;
+    /* ①〜⑥の見出し (白背景・黒文字) */
+    .white-block-heading {
+        background-color: #ffffff;
+        color: #000000 !important;
         font-weight: bold;
-        font-size: 1.25em;
-        margin-top: 20px;
+        font-size: 1.15em;
+        margin-top: 25px;
         margin-bottom: 15px;
-        padding: 8px 15px;
-        border: 2px solid #ffffff;
-        display: inline-block; /* 枠を文字幅に合わせる */
-        border-radius: 0px;
+        padding: 5px 15px;
+        display: inline-block;
+        border-radius: 2px;
+    }
+    /* 見出し内のテキストを黒に固定 */
+    .white-block-heading * {
+        color: #000000 !important;
     }
     /* 強み・課題・改善案の下線 */
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
@@ -79,7 +87,6 @@ st.markdown("""
     th { color: #D4AF37 !important; background-color: #333 !important; }
     /* タブ設定 */
     button[data-baseweb="tab"] p { color: #888 !important; }
-    button[aria-selected="true"] { border-bottom-color: #D4AF37 !important; }
     button[aria-selected="true"] p { color: #D4AF37 !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -88,12 +95,12 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を白枠囲み見出しに置換
-    text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="bordered-heading">\1\2</span>', text)
+    # ①〜⑥を白背景・黒文字の見出しに置換
+    text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="white-block-heading">\1\2</span>', text)
     # 強み・課題・改善案に下線
     for kw in ["強み", "課題", "改善案"]:
         text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
-    # タイトル行を黄色背景に
+    # タイトル行を黄色背景・黒文字に
     text = re.sub(r'(Google検索広告プラン：[^\n<]+)', r'<span class="plan-title">\1</span>', text)
     text = text.replace("\n", "<br>")
     return text
@@ -133,10 +140,11 @@ def parse_result_data(text):
     return None
 
 # --- 5. メインUI ---
-st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/1995/1995531.png", width=80)
+    # アイコンを歯車に変更
+    st.image("https://cdn-icons-png.flaticon.com/512/3524/3524659.png", width=60)
     st.title("Admin Menu")
     pwd = st.text_input("アクセスパスワード", type="password")
     if pwd != "password":
@@ -144,7 +152,9 @@ with st.sidebar:
         st.stop()
 
 api_key = st.secrets.get("GEMINI_API_KEY")
-st.title("🚀 検索（リスティング）広告案 自動生成ツール")
+
+# アイコン（🚀）を削除
+st.title("検索（リスティング）広告案 自動生成ツール")
 
 url_in = st.text_input("LPのURLを入力してください", placeholder="https://********.com")
 
@@ -166,6 +176,8 @@ if st.session_state.ad_result:
             df_all[df_all['Type'] == '説明文'].to_excel(writer, index=False, sheet_name='③説明文')
             df_all[df_all['Type'] == 'キーワード'].to_excel(writer, index=False, sheet_name='④キーワード')
             df_all[df_all['Type'].isin(['スニペット', 'コールアウト'])].to_excel(writer, index=False, sheet_name='アセット')
+        
+        # Excelボタンのテキストを黒に設定
         st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
     def get_section_text(full_text, start_num, end_num=None):
@@ -191,8 +203,6 @@ if st.session_state.ad_result:
 
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        
-        # --- ④ キーワードテーブル ---
         st.markdown(apply_decoration("④キーワード（一覧）"), unsafe_allow_html=True)
         if df_all is not None:
             kw_df = df_all[df_all['Type'] == 'キーワード'].copy()
@@ -200,7 +210,6 @@ if st.session_state.ad_result:
                 kw_df = kw_df.rename(columns={'Content': 'キーワード', 'Details': 'マッチタイプ', 'Other1': '推定CPC', 'Other2': '優先度'})
                 st.table(kw_df[['キーワード', 'マッチタイプ', '推定CPC', '優先度']])
         
-        # --- ⑤ 構造化スニペットテーブル ---
         st.markdown(apply_decoration("⑤構造化スニペット（一覧）"), unsafe_allow_html=True)
         if df_all is not None:
             snip_df = df_all[df_all['Type'] == 'スニペット'].copy()
@@ -208,7 +217,6 @@ if st.session_state.ad_result:
                 snip_df = snip_df.rename(columns={'Content': '種類', 'Details': '値'})
                 st.table(snip_df[['種類', '値']])
 
-        # --- ⑥ コールアウト表示 ---
         content3_rest = get_section_text(main_text, "⑥")
         st.markdown(apply_decoration(content3_rest), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
