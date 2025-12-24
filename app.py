@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (背景色を削除し、文字のみで構成) ---
+# --- 2. CSSデザイン (背景色を排除し、視認性を最優先) ---
 st.markdown("""
     <style>
     /* 全体背景：黒 */
@@ -47,7 +47,7 @@ st.markdown("""
         background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
     }
 
-    /* メインタイトル: 背景なし・黄色太文字 */
+    /* メインタイトル: 背景なし・黄色太文字＋下線 */
     .plan-title {
         color: #ffff00 !important;
         font-size: 1.5em !important;
@@ -58,12 +58,12 @@ st.markdown("""
         padding-bottom: 10px;
     }
 
-    /* ①〜⑥見出し: 背景なし・白太文字 + 左側にゴールドの線 */
+    /* ①〜⑥見出し: 背景なし・白太文字 + 左側にゴールドの縦線 */
     .section-heading {
         color: #ffffff !important;
         font-weight: bold !important;
-        font-size: 1.3em !important;
-        margin-top: 30px !important;
+        font-size: 1.25em !important;
+        margin-top: 35px !important;
         margin-bottom: 15px !important;
         display: block !important;
         border-left: 5px solid #D4AF37;
@@ -79,7 +79,7 @@ st.markdown("""
         margin-bottom: 25px; line-height: 1.8;
     }
 
-    /* テーブルスタイル */
+    /* テーブルデザイン */
     div[data-testid="stTable"] table { background-color: #1e1e1e !important; color: white !important; border: 1px solid #444; width: 100%; }
     th { color: #D4AF37 !important; background-color: #333 !important; }
     td { color: #ffffff !important; }
@@ -94,7 +94,7 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を装飾見出しに
+    # ①〜⑥を見出しスタイルに
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
     # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
@@ -134,7 +134,7 @@ def generate_ad_plan(site_text, api_key):
         
         【構成】
         冒頭：Google検索広告プラン：(サイト名)
-        ①サイト解析結果：詳細に記載。
+        ①サイト解析結果：強み、課題、改善案を含めて詳細に。
         ②広告文（DL）：見出し15個
         ③説明文（DL）：4個
         ④キーワード（DL）：20個以上
@@ -146,7 +146,7 @@ def generate_ad_plan(site_text, api_key):
         Type,Content,Details,Other1,Other2
         見出し,(内容),,,
         説明文,(内容),,,
-        キーワード,(内容),(マッチ),(CPC),(優先)
+        キーワード,(キーワード),(マッチ),(CPC),(優先)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
@@ -156,17 +156,20 @@ def generate_ad_plan(site_text, api_key):
         return response.text
     except Exception as e: return f"AI生成エラー: {str(e)}"
 
+# エラーを回避して表を表示するための関数
 def safe_table_display(df, type_name, col_mapping):
     try:
         if df is None or df.empty: return False
-        sub_df = df[df['Type'].str.contains(type_name, na=False, case=False)].copy()
+        # 「Type」列に含まれるキーワードでフィルタリング
+        sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
         
-        # 必要な列を確保
+        display_cols = []
         for orig_col in col_mapping.keys():
             if orig_col not in sub_df.columns: sub_df[orig_col] = ""
+            display_cols.append(orig_col)
         
-        st.table(sub_df[list(col_mapping.keys())].rename(columns=col_mapping))
+        st.table(sub_df[display_cols].rename(columns=col_mapping))
         return True
     except: return False
 
@@ -174,8 +177,8 @@ def safe_table_display(df, type_name, col_mapping):
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3524/3524659.png", width=60)
-    pwd = st.text_input("アクセスパスワード", type="password")
+    st.image("[https://cdn-icons-png.flaticon.com/512/3524/3524659.png](https://cdn-icons-png.flaticon.com/512/3524/3524659.png)", width=60)
+    pwd = st.text_input("パスワード", type="password")
     if pwd != "password":
         if pwd != "": st.error("パスワードが違います")
         st.stop()
@@ -194,24 +197,25 @@ if st.button("分析＆生成スタート"):
 
 # --- 結果表示エリア ---
 if st.session_state.ad_result:
-    # データパース
+    # データの解析
     df_all = None
     if "[DATA_START]" in st.session_state.ad_result:
         try:
             raw_csv = st.session_state.ad_result.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
+            # Markdown記号などの除去
             raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
             df_all = pd.read_csv(io.StringIO(raw_csv))
             df_all.columns = df_all.columns.str.strip()
         except: pass
 
-    # Excelボタン
+    # Excelダウンロード
     if df_all is not None:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
             for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
-                tmp = df_all[df_all['Type'].str.contains(t, na=False, case=False)]
+                tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)]
                 if not tmp.empty: tmp.to_excel(writer, index=False, sheet_name=s)
-            tmp_a = df_all[df_all['Type'].str.contains('スニペット|コールアウト', na=False, case=False)]
+            tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)]
             if not tmp_a.empty: tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
         st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
@@ -220,18 +224,19 @@ if st.session_state.ad_result:
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        # ①から②の直前まで
         c1 = main_text.split("②")[0] if "②" in main_text else main_text
         st.markdown(apply_decoration(c1), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown(apply_decoration("②広告文"), unsafe_allow_html=True)
+        st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※データの読み込み中、または形式不一致です。下の文章をご確認ください。")
+            st.info("※表の生成に失敗しました。下の全体文章を参照してください。")
         
-        st.markdown(apply_decoration("③説明文"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, '説明文', {'Content': '広告説明文案'}):
+        st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
+        if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}):
             pass
         st.markdown('</div>', unsafe_allow_html=True)
 
