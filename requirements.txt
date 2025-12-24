@@ -1,0 +1,6 @@
+streamlit
+pandas
+openpyxl
+google-generativeai
+playwright
+beautifulsoup4
