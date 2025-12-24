@@ -1,11 +1,25 @@
 import streamlit as st
 import asyncio
 import sys
+import os # 追加
 import pandas as pd
 import io
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+
+# --- 【重要】Streamlit Cloud上でのPlaywrightブラウザ自動インストール ---
+@st.cache_resource # 1回だけ実行されるようにキャッシュ
+def install_playwright():
+    # クラウド環境（Linux）の場合のみ実行
+    if sys.platform != "win32":
+        os.system("playwright install chromium")
+
+install_playwright()
+
+# Windows + Python 3.14 用の互換性パッチ
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # --- セッション状態の初期化 ---
 if "ad_result" not in st.session_state:
@@ -14,7 +28,11 @@ if "ad_result" not in st.session_state:
 # サイトの読み込み・掃除関数
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # 起動引数をクラウド用に調整
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
         try:
@@ -31,15 +49,14 @@ async def fetch_and_clean_content(url):
             await browser.close()
             return f"Error: {str(e)}"
 
-# AI生成関数
+# --- 以下、以前のコードと同じ（AI生成、UI、認証など） ---
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         target_model = "models/gemini-2.5-flash" if "models/gemini-2.5-flash" in available_models else "models/gemini-1.5-flash"
         model = genai.GenerativeModel(target_model)
-        
-        prompt = f"あなたは買取業界専門の広告コンサルタントです。以下のサイト情報を分析し、Google検索広告プラン案を①サイト解析結果 ②広告文15個 ③説明文4個 ④キーワード20個 ⑤構造化スニペット ⑥コールアウトアセット の順で作成してください。最後に必ず [EXCEL_DATA] タグでCSVデータを付与してください。\n\n解析サイト：{site_text}"
+        prompt = f"あなたは買取業界専門の広告コンサルタントです。以下のサイト情報を分析し、Google検索広告プラン案を①〜⑥の順で作成してください。最後に必ず [EXCEL_DATA] タグでCSVデータを付与してください。\n\n解析サイト：{site_text}"
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -61,30 +78,40 @@ def create_excel(text):
     except:
         return None
 
-# --- UI設定 ---
 st.set_page_config(page_title="検索（リスティング）広告案 自動生成ツール", layout="wide")
 st.title("🚀 検索（リスティング）広告案 自動生成ツール")
 
-# APIキーの取得（設定から読み込むか、画面で入力させる）
+st.sidebar.title("認証")
+input_password = st.sidebar.text_input("アクセスパスワードを入力してください", type="password")
+
+if input_password != "password":
+    if input_password == "":
+        st.info("サイドバーにパスワードを入力してログインしてください。")
+    else:
+        st.error("パスワードが正しくありません。")
+    st.stop()
+
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
-    api_key = st.sidebar.text_input("Gemini API Keyを入力してください", type="password")
+    st.error("SecretsにGEMINI_API_KEYが設定されていません。")
+    st.stop()
 
 target_url = st.text_input("解析したい買取LPのURLを入力してください", placeholder="https://********.com")
 
 if st.button("分析＆生成スタート"):
-    if not api_key:
-        st.error("APIキーが設定されていません。サイドバーから入力するか、Secretsに設定してください。")
-    elif not target_url:
+    if not target_url:
         st.warning("URLを入力してください。")
     else:
-        with st.spinner("AIが戦略を生成中..."):
+        with st.spinner("AIが戦略を生成中...（初回はブラウザ起動に時間がかかる場合があります）"):
             try:
-                # Playwrightの実行
+                # クラウド環境ではasyncio.runで直接実行
                 cleaned_text = asyncio.run(fetch_and_clean_content(target_url))
-                st.session_state.ad_result = generate_ad_plan(cleaned_text, api_key)
-                st.balloons()
+                if "Error" in cleaned_text:
+                    st.error(f"サイト読み込みエラー: {cleaned_text}")
+                else:
+                    st.session_state.ad_result = generate_ad_plan(cleaned_text, api_key)
+                    st.balloons()
             except Exception as e:
                 st.error(f"エラー: {e}")
 
