@@ -8,7 +8,7 @@ import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
-# --- Playwright自動インストール (Streamlit Cloud用) ---
+# --- 1. 初期設定 & パッチ ---
 @st.cache_resource
 def install_playwright():
     if sys.platform != "win32":
@@ -19,11 +19,39 @@ install_playwright()
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-# --- セッション状態の初期化 (結果を保持するため) ---
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# サイトの読み込み・掃除
+# --- 2. CSSによるUIカスタマイズ ---
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f8f9fa;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 5px;
+        height: 3em;
+        background-color: #D4AF37; /* ゴールド系 */
+        color: white;
+        border: none;
+        font-weight: bold;
+    }
+    .stButton>button:hover {
+        background-color: #B8860B;
+        color: white;
+    }
+    .report-box {
+        padding: 20px;
+        border-radius: 10px;
+        background-color: white;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 3. 関数定義 (スクレイピング/AI/Excel) ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -46,7 +74,6 @@ async def fetch_and_clean_content(url):
             await browser.close()
             return f"Error: {str(e)}"
 
-# AI生成関数 (順序とデータ出力を厳格化)
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
@@ -55,40 +82,23 @@ def generate_ad_plan(site_text, api_key):
         model = genai.GenerativeModel(target_model)
         
         prompt = f"""
-        あなたは買取業界専門の広告コンサルタントです。以下のサイト情報を分析し、Google検索広告プランを作成してください。
+        あなたは買取業界専門の広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
+        【解析サイト】: {site_text}
         
-        【解析サイトテキスト】: {site_text}
-
-        【回答の構成ルール】
-        必ず以下の①〜⑥の順番で、見出しを正確に書いて出力してください。
-        ①サイト解析結果：強みと課題、改善案を詳細に記載。
-        ②広告文（DL）：見出し15個（30文字以内）を作成。
-        ③説明文（DL）：説明文4個（90文字以内）を作成。
-        ④キーワード（DL）：20個以上（キーワード, マッチタイプ, 推定CPC, 優先度）を表形式で。
-        ⑤構造化スニペット：2種類以上の「種類」と「値」。
-        ⑥コールアウトアセット：8個以上のベネフィット。
-
-        ---
-        【重要：データ書き出し】
-        回答の最後に、必ず [DATA_START] と [DATA_END] というタグで囲んで、以下の形式のCSVデータのみを省略せずに出力してください。
-        Type,Content,Details,Other1,Other2
-        見出し,見出しテキスト,文字数,,
-        説明文,説明文テキスト,文字数,,
-        キーワード,キーワード名,マッチタイプ,推定CPC,優先度
-        スニペット,種類,値,,
-        コールアウト,アセット内容,,,
-        [DATA_START]
-        Type,Content,Details,Other1,Other2
-        見出し,テキスト1...
-        ...
-        [DATA_END]
+        【出力ルール】:
+        以下の①〜⑥の見出しで構成し、最後に [DATA_START]CSVデータ[DATA_END] を付与してください。
+        ①サイト解析結果
+        ②広告文（DL）：見出し15個
+        ③説明文（DL）：4個
+        ④キーワード（DL）：20個以上（表形式）
+        ⑤構造化スニペット
+        ⑥コールアウトアセット
         """
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"AI生成エラー: {str(e)}"
 
-# Excel作成
 def create_excel(text):
     try:
         if "[DATA_START]" in text:
@@ -102,71 +112,94 @@ def create_excel(text):
                 df[df['Type'].isin(['スニペット', 'コールアウト'])].to_excel(writer, index=False, sheet_name='⑤⑥アセット')
             return output.getvalue()
         return None
-    except:
-        return None
+    except: return None
 
-# --- UI ---
-st.set_page_config(page_title="検索（リスティング）広告案 自動生成ツール", layout="wide")
-st.title("🚀 検索（リスティング）広告案 自動生成ツール")
+# --- 4. メインUI ---
+st.set_page_config(page_title="検索（リスティング）広告案 自動生成ツール", layout="wide", page_icon="🚀")
 
-# パスワード認証
-st.sidebar.title("認証")
-input_password = st.sidebar.text_input("アクセスパスワードを入力してください", type="password")
+# サイドバー設定
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/1995/1995531.png", width=100)
+    st.title("Admin Menu")
+    input_password = st.text_input("アクセスパスワード", type="password")
+    st.divider()
+    st.markdown("### 使い方")
+    st.info("1. パスワードを入力\n2. 解析したいURLを入力\n3. 生成ボタンを押す\n4. Excelをダウンロード")
 
+# 認証チェック
 if input_password != "password":
     if input_password == "":
-        st.info("サイドバーにパスワードを入力してください。")
+        st.info("サイドバーからパスワードを入力してください。")
     else:
         st.error("パスワードが正しくありません。")
     st.stop()
 
 # APIキー取得
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
-else:
-    st.error("管理者エラー: SecretsにGEMINI_API_KEYが設定されていません。")
+api_key = st.secrets.get("GEMINI_API_KEY")
+if not api_key:
+    st.error("管理者エラー: SecretsにAPIキーが設定されていません。")
     st.stop()
 
-# URL入力
-target_url = st.text_input("解析したい買取LPのURLを入力してください", placeholder="https://********.com")
+# メインコンテンツ
+st.title("🚀 検索（リスティング）広告案 自動生成ツール")
+st.caption("AIがサイトを解析し、Google広告の最適なキーワード、見出し、アセットを自動生成します。")
 
-if st.button("分析＆生成スタート"):
+with st.container():
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        target_url = st.text_input("解析したい買取LPのURLを入力してください", placeholder="https://********.com", label_visibility="collapsed")
+    with col2:
+        start_btn = st.button("分析＆生成スタート")
+
+if start_btn:
     if not target_url:
         st.warning("URLを入力してください。")
     else:
-        with st.spinner("AIコンサルタントが全項目を生成中..."):
-            try:
-                # Playwright実行
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                cleaned_text = loop.run_until_complete(fetch_and_clean_content(target_url))
-                
-                if "Error" in cleaned_text:
-                    st.error(f"サイト読み込み失敗: {cleaned_text}")
-                else:
-                    # 結果をセッションに保存
-                    st.session_state.ad_result = generate_ad_plan(cleaned_text, api_key)
-                    st.balloons()
-            except Exception as e:
-                st.error(f"エラー: {e}")
+        with st.status("🚀 広告戦略を構築中...", expanded=True) as status:
+            st.write("1. サイトの情報を読み込んでいます...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            cleaned_text = loop.run_until_complete(fetch_and_clean_content(target_url))
+            
+            if "Error" in cleaned_text:
+                st.error("サイトの読み込みに失敗しました。")
+            else:
+                st.write("2. AIによる競合・サイト分析を開始...")
+                st.session_state.ad_result = generate_ad_plan(cleaned_text, api_key)
+                status.update(label="✅ 生成完了！", state="complete", expanded=False)
+                st.balloons()
 
-# --- 結果表示とダウンロード ---
+# --- 結果の表示エリア ---
 if st.session_state.ad_result:
     excel_file = create_excel(st.session_state.ad_result)
     
     if excel_file:
-        st.success("分析が完了しました！")
         st.download_button(
-            label="📊 Excel形式でダウンロード（②③④）",
+            label="📊 Excel形式でダウンロード（広告文・キーワード）",
             data=excel_file,
-            file_name="search_ad_plan.xlsx",
+            file_name="ad_strategy_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_button"
         )
-    else:
-        st.warning("Excel用データの生成に失敗しました。もう一度実行してください。")
 
-    st.markdown("---")
-    # CSVタグ部分を隠して表示
-    display_content = st.session_state.ad_result.split("[DATA_START]")[0]
-    st.markdown(display_content)
+    # 結果をタブで整理
+    tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ ターゲット・アセット"])
+    
+    full_text = st.session_state.ad_result.split("[DATA_START]")[0]
+    sections = full_text.split("②") # 暫定的に分割してタブに振り分け
+    
+    with tab1:
+        st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        st.markdown(full_text.split("②")[0])
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab2:
+        st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        if len(sections) > 1:
+            st.markdown("②" + sections[1].split("④")[0])
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab3:
+        st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        if "④" in full_text:
+            st.markdown("④" + full_text.split("④")[1])
+        st.markdown('</div>', unsafe_allow_html=True)
