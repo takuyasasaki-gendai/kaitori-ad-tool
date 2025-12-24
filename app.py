@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSによるUIカスタマイズ ---
+# --- 2. CSSデザイン ---
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -31,31 +31,31 @@ st.markdown("""
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #D4AF37; color: white; border: none; font-weight: bold;
     }
-    /* メインタイトル黄色背景 */
     .plan-title {
         background-color: #ffff00; font-weight: bold; padding: 5px 10px;
         font-size: 1.3em; display: inline-block; border-radius: 3px;
         margin-bottom: 15px; color: #000;
     }
-    /* ①〜⑥の見出し（赤字・太字・サイズ統一） */
     .red-heading {
         color: #ff0000; font-weight: bold; font-size: 1.25em;
         margin-top: 15px; margin-bottom: 10px; display: block;
     }
-    /* 強み・課題・改善案の下線 */
     .underlined-keyword { text-decoration: underline; font-weight: bold; }
-    /* レポートボックス */
     .report-box {
         padding: 25px; border-radius: 10px; background-color: white;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; line-height: 1.7;
     }
+    /* テーブルの見た目調整 */
+    .stTable { background-color: white; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 3. 装飾適用関数 (HTMLを返す) ---
 def apply_decoration(text):
     if not text: return ""
-    # ①〜⑥を赤文字に置換
+    # #を削除
+    text = text.replace("#", "")
+    # ①〜⑥を赤文字に
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="red-heading">\1\2</span>', text)
     # 強み・課題・改善案に下線
     for kw in ["強み", "課題", "改善案"]:
@@ -66,7 +66,7 @@ def apply_decoration(text):
     text = text.replace("\n", "<br>")
     return text
 
-# --- 4. ロジック関数 (スクレイピング/AI/Excel) ---
+# --- 4. ロジック関数 ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"])
@@ -92,19 +92,14 @@ def generate_ad_plan(site_text, api_key):
         return model.generate_content(prompt).text
     except Exception as e: return f"AI生成エラー: {str(e)}"
 
-def create_excel(text):
+# データ解析用関数（ExcelとUIテーブル両方で使用）
+def parse_result_data(text):
     try:
         if "[DATA_START]" in text:
             raw = text.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
-            df = pd.read_csv(io.StringIO(raw))
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='openpyxl') as writer:
-                df[df['Type'] == '見出し'].to_excel(writer, index=False, sheet_name='②広告文')
-                df[df['Type'] == '説明文'].to_excel(writer, index=False, sheet_name='③説明文')
-                df[df['Type'] == 'キーワード'].to_excel(writer, index=False, sheet_name='④キーワード')
-                df[df['Type'].isin(['スニペット', 'コールアウト'])].to_excel(writer, index=False, sheet_name='アセット')
-            return out.getvalue()
+            return pd.read_csv(io.StringIO(raw))
     except: return None
+    return None
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="検索（リスティング）広告案 自動生成ツール", layout="wide", page_icon="🚀")
@@ -124,50 +119,65 @@ url_in = st.text_input("LPのURLを入力してください", placeholder="https
 
 if st.button("分析＆生成スタート"):
     if url_in:
-        with st.status("🚀 戦略構築中...") as status:
+        with st.spinner("🚀 戦略構築中...") as status:
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             status.update(label="✅ 生成完了！", state="complete")
             st.balloons()
 
-# --- 結果表示 (ここが修正のキモ) ---
+# --- 結果表示 ---
 if st.session_state.ad_result:
-    # データ部分を除去した表示用テキスト
+    # データをパース
+    df_all = parse_result_data(st.session_state.ad_result)
     main_text = st.session_state.ad_result.split("[DATA_START]")[0]
     
-    excel = create_excel(st.session_state.ad_result)
-    if excel:
-        st.download_button("📊 Excel形式でダウンロード", data=excel, file_name="ad_strategy.xlsx")
+    # Excelボタン
+    if df_all is not None:
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            df_all[df_all['Type'] == '見出し'].to_excel(writer, index=False, sheet_name='②広告文')
+            df_all[df_all['Type'] == '説明文'].to_excel(writer, index=False, sheet_name='③説明文')
+            df_all[df_all['Type'] == 'キーワード'].to_excel(writer, index=False, sheet_name='④キーワード')
+            df_all[df_all['Type'].isin(['スニペット', 'コールアウト'])].to_excel(writer, index=False, sheet_name='アセット')
+        st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
-    # セクションごとに安全に分割するロジック
-    def get_section(full_text, start_num, end_num=None):
+    # セクション分割用関数
+    def get_section_text(full_text, start_num, end_num=None):
         try:
-            start_marker = start_num
-            # 次のセクションの番号を探す
             if end_num:
-                pattern = f"{start_marker}(.*?){end_num}"
+                pattern = f"{start_num}(.*?){end_num}"
                 match = re.search(pattern, full_text, re.DOTALL)
-                if match: return start_marker + match.group(1)
-            # 最後のセクションの場合
-            pattern = f"{start_marker}(.*)"
+                return start_num + match.group(1) if match else ""
+            pattern = f"{start_num}(.*)"
             match = re.search(pattern, full_text, re.DOTALL)
-            return start_marker + match.group(1) if match else ""
+            return start_num + match.group(1) if match else ""
         except: return ""
 
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
     with tab1:
+        # #を除去して表示
         content1 = main_text.split("②")[0] if "②" in main_text else main_text
         st.markdown(f'<div class="report-box">{apply_decoration(content1)}</div>', unsafe_allow_html=True)
     
     with tab2:
-        # ②から④の前までを抽出
-        content2 = get_section(main_text, "②", "④")
-        if not content2: content2 = "データが見つかりませんでした。再度生成してください。"
+        content2 = get_section_text(main_text, "②", "④")
         st.markdown(f'<div class="report-box">{apply_decoration(content2)}</div>', unsafe_allow_html=True)
 
     with tab3:
-        # ④から最後までを抽出
-        content3 = get_section(main_text, "④")
-        if not content3: content3 = "データが見つかりませんでした。再度生成してください。"
-        st.markdown(f'<div class="report-box">{apply_decoration(content3)}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        # タイトル「④キーワード」を表示
+        st.markdown(apply_decoration("④キーワード（一覧）"), unsafe_allow_html=True)
+        
+        # キーワードを綺麗なテーブルで表示
+        if df_all is not None:
+            kw_df = df_all[df_all['Type'] == 'キーワード'].copy()
+            if not kw_df.empty:
+                # 表を見やすく整形
+                kw_df = kw_df.rename(columns={'Content': 'キーワード', 'Details': 'マッチタイプ', 'Other1': '推定CPC', 'Other2': '優先度'})
+                st.table(kw_df[['キーワード', 'マッチタイプ', '推定CPC', '優先度']])
+        
+        # 残りの⑤⑥を表示
+        content3_rest = get_section_text(main_text, "⑤")
+        st.markdown(apply_decoration(content3_rest), unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
