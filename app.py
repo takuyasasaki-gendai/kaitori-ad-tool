@@ -8,6 +8,7 @@ import re
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+from google.api_core import exceptions
 
 # --- 1. 初期設定 ---
 @st.cache_resource
@@ -23,28 +24,24 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (指示通りのUIを維持) ---
+# --- 2. CSSデザイン (背景色なし・視認性重視) ---
 st.markdown("""
     <style>
-    /* 全体背景：黒 */
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
 
-    /* Excelボタン: 背景ゴールド・テキスト黒 */
     .stDownloadButton>button {
         width: 100%; border-radius: 5px; height: 3.5em;
         background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
     }
     .stDownloadButton>button p { color: #000000 !important; }
 
-    /* 分析スタートボタン: 背景ゴールド・テキスト白 */
     .stButton>button {
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
     }
 
-    /* メインタイトル: 背景なし・黄色太文字＋下線 */
     .plan-title {
         color: #ffff00 !important;
         font-size: 1.5em !important;
@@ -55,7 +52,6 @@ st.markdown("""
         padding-bottom: 10px;
     }
 
-    /* ①〜⑥見出し: 背景なし・白太文字 + 左側にゴールドの縦線 */
     .section-heading {
         color: #ffffff !important;
         font-weight: bold !important;
@@ -67,21 +63,14 @@ st.markdown("""
         padding-left: 15px;
     }
 
-    /* 下線キーワード */
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
 
-    /* レポート容器 */
-    .report-box {
-        padding: 20px; border-radius: 0px; background-color: transparent;
-        margin-bottom: 25px; line-height: 1.8;
-    }
+    .report-box { padding: 20px; border-radius: 0px; background-color: transparent; margin-bottom: 25px; line-height: 1.8; }
 
-    /* テーブルデザイン */
     div[data-testid="stTable"] table { background-color: #1e1e1e !important; color: white !important; border: 1px solid #444; width: 100%; }
     th { color: #D4AF37 !important; background-color: #333 !important; }
     td { color: #ffffff !important; }
     
-    /* タブの文字色 */
     button[data-baseweb="tab"] p { color: #888 !important; }
     button[aria-selected="true"] p { color: #D4AF37 !important; }
     </style>
@@ -91,12 +80,9 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を装飾見出しに
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
-    # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
         text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
-    # 黄色タイトル
     text = re.sub(r'(Google検索広告プラン：[^\n<]+)', r'<span class="plan-title">\1</span>', text)
     text = text.replace("\n", "<br>")
     return text
@@ -126,7 +112,6 @@ def generate_ad_plan(site_text, api_key):
         target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
         model = genai.GenerativeModel(target_model)
         
-        # 指示の強化：具体的な数値（〇〇円）を出すように強制
         prompt = f"""
         あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
         
@@ -148,26 +133,25 @@ def generate_ad_plan(site_text, api_key):
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
-        ※注意：Other1（推定CPC）には、必ず「150円」や「420円」といった具体的な数値を円単位で記入してください。「CPC想定」や「要確認」などの言葉によるプレースホルダーは厳禁です。
+        ※注意：Other1（推定CPC）には、必ず「150円」や「420円」といった具体的な数値を円単位で記入してください。「CPC想定」などの言葉は厳禁です。
 
         解析サイト：{site_text}
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"AI生成エラー: {str(e)}"
+    except exceptions.ResourceExhausted:
+        return "ERROR_429: 無料枠のリクエスト上限に達しました。1日（または1分）待つか、別のAPIキーを設定してください。"
+    except Exception as e:
+        return f"AI生成エラー: {str(e)}"
 
 def safe_table_display(df, type_name, col_mapping):
     try:
         if df is None or df.empty: return False
         sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
-        
-        display_cols = []
         for orig_col in col_mapping.keys():
             if orig_col not in sub_df.columns: sub_df[orig_col] = ""
-            display_cols.append(orig_col)
-        
-        st.table(sub_df[display_cols].rename(columns=col_mapping))
+        st.table(sub_df[list(col_mapping.keys())].rename(columns=col_mapping))
         return True
     except: return False
 
@@ -190,8 +174,12 @@ if st.button("分析＆生成スタート"):
     if url_in:
         with st.spinner("🚀 戦略構築中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
-            st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
-            st.balloons()
+            res = generate_ad_plan(cleaned, api_key)
+            if "ERROR_429" in res:
+                st.error("⚠️ Google AI APIの無料枠制限（1日の上限）に達しました。明日までお待ちいただくか、新しいAPIキーを発行して設定してください。")
+            else:
+                st.session_state.ad_result = res
+                st.balloons()
 
 # --- 結果表示 ---
 if st.session_state.ad_result:
@@ -227,24 +215,17 @@ if st.session_state.ad_result:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※表の生成待ちです。下の文章を参照してください。")
-        
+            st.info("※表の生成待ち、またはデータ形式不一致です。")
         st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}):
-            pass
+        if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}): pass
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
-        # 具体的数値を Other1 からマッピング
-        if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}):
-            pass
-        
+        if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}): pass
         st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'}):
-            pass
-
+        if not safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'}): pass
         st.markdown(apply_decoration("⑥コールアウトアセット"), unsafe_allow_html=True)
         c6 = main_text.split("⑥")[1] if "⑥" in main_text else ""
         st.markdown(apply_decoration(c6), unsafe_allow_html=True)
