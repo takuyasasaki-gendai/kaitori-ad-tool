@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (背景色なし・視認性重視) ---
+# --- 2. CSSデザイン (指示通りのUIを維持) ---
 st.markdown("""
     <style>
     /* 全体背景：黒 */
@@ -91,9 +91,12 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
+    # ①〜⑥を装飾見出しに
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
+    # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
         text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
+    # 黄色タイトル
     text = re.sub(r'(Google検索広告プラン：[^\n<]+)', r'<span class="plan-title">\1</span>', text)
     text = text.replace("\n", "<br>")
     return text
@@ -123,7 +126,7 @@ def generate_ad_plan(site_text, api_key):
         target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
         model = genai.GenerativeModel(target_model)
         
-        # 推定CPCと優先度を確実に出力させるための指示強化
+        # 指示の強化：具体的な数値（〇〇円）を出すように強制
         prompt = f"""
         あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
         
@@ -132,7 +135,7 @@ def generate_ad_plan(site_text, api_key):
         ①サイト解析結果：強み、課題、改善案を含めて。
         ②広告文（DL）：見出し15個
         ③説明文（DL）：4個
-        ④キーワード（DL）：20個以上。各キーワードに「推定CPC」と「優先度（高・中・低）」を必ず設定してください。
+        ④キーワード（DL）：20個以上。各キーワードの「推定CPC（具体的数値）」と「優先度」を必ず設定してください。
         ⑤構造化スニペット
         ⑥コールアウトアセット
 
@@ -141,11 +144,11 @@ def generate_ad_plan(site_text, api_key):
         Type,Content,Details,Other1,Other2
         見出し,(内容),,,
         説明文,(内容),,,
-        キーワード,(キーワード),(マッチタイプ),(推定CPC),(優先度)
+        キーワード,(キーワード),(マッチタイプ),(具体的数値：〇〇円),(優先度)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
-        ※キーワード行では、Other1に「150円」のような推定CPC、Other2に「高」のような優先度を必ず入力してください。空白は禁止です。
+        ※注意：Other1（推定CPC）には、必ず「150円」や「420円」といった具体的な数値を円単位で記入してください。「CPC想定」や「要確認」などの言葉によるプレースホルダーは厳禁です。
 
         解析サイト：{site_text}
         """
@@ -234,7 +237,7 @@ if st.session_state.ad_result:
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
-        # ここで「推定CPC」と「優先度」を Other1, Other2 からマッピング
+        # 具体的数値を Other1 からマッピング
         if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}):
             pass
         
