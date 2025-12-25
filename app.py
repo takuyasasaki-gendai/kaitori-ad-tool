@@ -140,18 +140,26 @@ def generate_ad_plan(site_text, api_key):
         response = model.generate_content(prompt)
         return response.text
     except exceptions.ResourceExhausted:
-        return "ERROR_429: 無料枠のリクエスト上限に達しました。1日（または1分）待つか、別のAPIキーを設定してください。"
+        return "ERROR_429: 無料枠のリクエスト上限に達しました。しばらく待つか、別のAPIキーを設定してください。"
     except Exception as e:
         return f"AI生成エラー: {str(e)}"
 
+# エラー回避＋インデックスリセットを行うテーブル表示関数
 def safe_table_display(df, type_name, col_mapping):
     try:
         if df is None or df.empty: return False
         sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
+        
+        # --- インデックスを1から始まる形にリセット ---
+        sub_df.index = range(1, len(sub_df) + 1)
+        
+        display_cols = []
         for orig_col in col_mapping.keys():
             if orig_col not in sub_df.columns: sub_df[orig_col] = ""
-        st.table(sub_df[list(col_mapping.keys())].rename(columns=col_mapping))
+            display_cols.append(orig_col)
+        
+        st.table(sub_df[display_cols].rename(columns=col_mapping))
         return True
     except: return False
 
@@ -176,7 +184,7 @@ if st.button("分析＆生成スタート"):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             res = generate_ad_plan(cleaned, api_key)
             if "ERROR_429" in res:
-                st.error("⚠️ Google AI APIの無料枠制限（1日の上限）に達しました。明日までお待ちいただくか、新しいAPIキーを発行して設定してください。")
+                st.error("⚠️ Google AI APIの制限に達しました。少し時間を置いて再試行してください。")
             else:
                 st.session_state.ad_result = res
                 st.balloons()
@@ -196,10 +204,15 @@ if st.session_state.ad_result:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
             for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
-                tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)]
-                if not tmp.empty: tmp.to_excel(writer, index=False, sheet_name=s)
-            tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)]
-            if not tmp_a.empty: tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
+                tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
+                if not tmp.empty:
+                    # Excel書き出し時も念のためリセット
+                    tmp.index = range(1, len(tmp) + 1)
+                    tmp.to_excel(writer, index=True, index_label="No", sheet_name=s)
+            tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
+            if not tmp_a.empty:
+                tmp_a.index = range(1, len(tmp_a) + 1)
+                tmp_a.to_excel(writer, index=True, index_label="No", sheet_name='⑤⑥アセット')
         st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
     main_text = st.session_state.ad_result.split("[DATA_START]")[0]
@@ -215,7 +228,7 @@ if st.session_state.ad_result:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※表の生成待ち、またはデータ形式不一致です。")
+            st.info("※データの読み込み待ち、または形式不一致です。")
         st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}): pass
         st.markdown('</div>', unsafe_allow_html=True)
@@ -223,6 +236,7 @@ if st.session_state.ad_result:
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
+        # Other1=推定CPC, Other2=優先度 をリセット後のインデックスで表示
         if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}): pass
         st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
         if not safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'}): pass
