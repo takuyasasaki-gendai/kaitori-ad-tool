@@ -24,7 +24,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (背景色なし・視認性重視) ---
+# --- 2. CSSデザイン (指示通りのUIを維持) ---
 st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
@@ -64,13 +64,10 @@ st.markdown("""
     }
 
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
-
     .report-box { padding: 20px; border-radius: 0px; background-color: transparent; margin-bottom: 25px; line-height: 1.8; }
-
     div[data-testid="stTable"] table { background-color: #1e1e1e !important; color: white !important; border: 1px solid #444; width: 100%; }
     th { color: #D4AF37 !important; background-color: #333 !important; }
     td { color: #ffffff !important; }
-    
     button[data-baseweb="tab"] p { color: #888 !important; }
     button[aria-selected="true"] p { color: #D4AF37 !important; }
     </style>
@@ -87,20 +84,27 @@ def apply_decoration(text):
     text = text.replace("\n", "<br>")
     return text
 
-# --- 4. ロジック関数 ---
+# --- 4. ロジック関数 (スワイプ型LP対応のスクレイピング) ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"])
-        context = await browser.new_context(user_agent="Mozilla/5.0")
+        # スワイプ形式LPはモバイル表示が多いため、iPhoneとしてシミュレート
+        context = await browser.new_context(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # 【重要】スワイプ/スクロール形式LPの全コンテンツを読み込ませるためのシミュレーション
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(1)
+            
             html = await page.content()
             await browser.close()
             soup = BeautifulSoup(html, "html.parser")
             for s in soup(["script", "style", "nav", "footer", "header", "aside"]): s.decompose()
-            return " ".join(soup.get_text(separator=" ").split())[:4000]
+            return " ".join(soup.get_text(separator=" ").split())[:4500]
         except Exception as e:
             await browser.close()
             return f"Error: {str(e)}"
@@ -120,7 +124,7 @@ def generate_ad_plan(site_text, api_key):
         ①サイト解析結果：強み、課題、改善案を含めて。
         ②広告文（DL）：見出し15個
         ③説明文（DL）：4個
-        ④キーワード（DL）：20個以上。各キーワードの「推定CPC（具体的数値）」と「優先度」を必ず設定してください。
+        ④キーワード（DL）：20個以上。各キーワードの「推定CPC（具体的数値：〇〇円）」と「優先度」を設定。
         ⑤構造化スニペット
         ⑥コールアウトアセット
 
@@ -129,29 +133,28 @@ def generate_ad_plan(site_text, api_key):
         Type,Content,Details,Other1,Other2
         見出し,(内容),,,
         説明文,(内容),,,
-        キーワード,(キーワード),(マッチタイプ),(具体的数値：〇〇円),(優先度)
+        キーワード,(キーワード),(マッチ),(具体的数値：〇〇円),(優先度)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
 
-        ※注意：Other1（推定CPC）には、必ず「150円」や「420円」といった具体的な数値を円単位で記入してください。「CPC想定」などの言葉は厳禁です。
+        ※注意：Other1（推定CPC）には、必ず「150円」のような具体的な数値を円単位で記入してください。「CPC想定」などは厳禁です。
 
         解析サイト：{site_text}
         """
         response = model.generate_content(prompt)
         return response.text
     except exceptions.ResourceExhausted:
-        return "ERROR_429: 無料枠のリクエスト上限に達しました。しばらく待つか、別のAPIキーを設定してください。"
+        return "ERROR_429: 無料枠の上限に達しました。しばらくお待ちください。"
     except Exception as e:
         return f"AI生成エラー: {str(e)}"
 
-# エラー回避＋インデックスリセットを行うテーブル表示関数
 def safe_table_display(df, type_name, col_mapping):
     try:
         if df is None or df.empty: return False
         sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
         if sub_df.empty: return False
         
-        # --- インデックスを1から始まる形にリセット ---
+        # インデックスを1から始まる形にリセット
         sub_df.index = range(1, len(sub_df) + 1)
         
         display_cols = []
@@ -184,7 +187,7 @@ if st.button("分析＆生成スタート"):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             res = generate_ad_plan(cleaned, api_key)
             if "ERROR_429" in res:
-                st.error("⚠️ Google AI APIの制限に達しました。少し時間を置いて再試行してください。")
+                st.error("⚠️ API制限に達しました。時間を置いてからお試しください。")
             else:
                 st.session_state.ad_result = res
                 st.balloons()
@@ -206,7 +209,6 @@ if st.session_state.ad_result:
             for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
                 tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
                 if not tmp.empty:
-                    # Excel書き出し時も念のためリセット
                     tmp.index = range(1, len(tmp) + 1)
                     tmp.to_excel(writer, index=True, index_label="No", sheet_name=s)
             tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
@@ -216,7 +218,7 @@ if st.session_state.ad_result:
         st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
     main_text = st.session_state.ad_result.split("[DATA_START]")[0]
-    tab1, tab2, tab3 = st.tabs(["📋  サイト解析", "✍️  広告文案", "🔍  アセット"])
+    tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
@@ -227,21 +229,18 @@ if st.session_state.ad_result:
     with tab2:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※データの読み込み待ち、または形式不一致です。")
+        safe_table_display(df_all, '見出し', {'Content': '広告見出し案'})
         st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}): pass
+        safe_table_display(df_all, '説明文', {'Content': '説明文案'})
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
-        # Other1=推定CPC, Other2=優先度 をリセット後のインデックスで表示
-        if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}): pass
+        safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
         st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
-        if not safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'}): pass
+        safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'})
         st.markdown(apply_decoration("⑥コールアウトアセット"), unsafe_allow_html=True)
         c6 = main_text.split("⑥")[1] if "⑥" in main_text else ""
         st.markdown(apply_decoration(c6), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
