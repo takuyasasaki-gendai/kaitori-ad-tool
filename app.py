@@ -216,7 +216,7 @@ if st.session_state.ad_result:
         st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
     main_text = st.session_state.ad_result.split("[DATA_START]")[0]
-    tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
+    tab1, tab2, tab3 = st.tabs(["📋  サイト解析", "✍️  広告文案", "🔍  アセット"])
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
@@ -244,3 +244,4 @@ if st.session_state.ad_result:
         c6 = main_text.split("⑥")[1] if "⑥" in main_text else ""
         st.markdown(apply_decoration(c6), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
