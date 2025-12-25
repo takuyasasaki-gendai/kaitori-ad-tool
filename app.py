@@ -67,7 +67,7 @@ st.markdown("""
         padding-left: 15px;
     }
 
-    /* 強み・課題・改善案の下線 */
+    /* 下線キーワード */
     .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
 
     /* レポート容器 */
@@ -91,12 +91,9 @@ st.markdown("""
 def apply_decoration(text):
     if not text: return ""
     text = text.replace("#", "")
-    # ①〜⑥を装飾見出しに（背景なし）
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
-    # キーワード下線
     for kw in ["強み", "課題", "改善案"]:
         text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
-    # 黄色タイトル
     text = re.sub(r'(Google検索広告プラン：[^\n<]+)', r'<span class="plan-title">\1</span>', text)
     text = text.replace("\n", "<br>")
     return text
@@ -126,6 +123,7 @@ def generate_ad_plan(site_text, api_key):
         target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
         model = genai.GenerativeModel(target_model)
         
+        # 推定CPCと優先度を確実に出力させるための指示強化
         prompt = f"""
         あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
         
@@ -134,18 +132,20 @@ def generate_ad_plan(site_text, api_key):
         ①サイト解析結果：強み、課題、改善案を含めて。
         ②広告文（DL）：見出し15個
         ③説明文（DL）：4個
-        ④キーワード（DL）：20個以上
+        ④キーワード（DL）：20個以上。各キーワードに「推定CPC」と「優先度（高・中・低）」を必ず設定してください。
         ⑤構造化スニペット
         ⑥コールアウトアセット
 
-        【重要：データ書き出し】
+        【重要：データ書き出しルール】
         最後に必ず [DATA_START] と [DATA_END] で囲んで、以下のCSVデータ形式のみを出力してください。
         Type,Content,Details,Other1,Other2
         見出し,(内容),,,
         説明文,(内容),,,
-        キーワード,(内容),(マッチ),(CPC),(優先)
+        キーワード,(キーワード),(マッチタイプ),(推定CPC),(優先度)
         スニペット,(種類),(値),,
         コールアウト,(内容),,,
+
+        ※キーワード行では、Other1に「150円」のような推定CPC、Other2に「高」のような優先度を必ず入力してください。空白は禁止です。
 
         解析サイト：{site_text}
         """
@@ -172,7 +172,6 @@ def safe_table_display(df, type_name, col_mapping):
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    # 外部URLを使わず、絵文字で歯車を表示してエラーを回避
     st.markdown("<h1 style='text-align: center; font-size: 50px;'>⚙️</h1>", unsafe_allow_html=True)
     pwd = st.text_input("パスワード", type="password")
     if pwd != "password":
@@ -225,7 +224,7 @@ if st.session_state.ad_result:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '見出し', {'Content': '広告見出し案'}):
-            st.info("※表の生成待ち、またはデータ形式不一致です。下の文章を参照してください。")
+            st.info("※表の生成待ちです。下の文章を参照してください。")
         
         st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
         if not safe_table_display(df_all, '説明文', {'Content': '説明文案'}):
@@ -235,6 +234,7 @@ if st.session_state.ad_result:
     with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
         st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
+        # ここで「推定CPC」と「優先度」を Other1, Other2 からマッピング
         if not safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'}):
             pass
         
