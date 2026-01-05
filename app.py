@@ -225,24 +225,49 @@ if st.session_state.ad_result:
         except:
             st.warning("一部のデータ形式が正しく読み込めませんでした。")
 
-    # 3. Excel作成とダウンロードボタン
+    # 3. Excelファイルの作成（確実に全データを含める）
     try:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            # ① サイト解析シート
-            pd.DataFrame([{"解析項目": "内容", "分析結果": main_text}]).to_excel(writer, index=False, sheet_name='①サイト解析')
-            # 各データシート
+            # --- ① サイト解析シートの作成 ---
+            # 改行コードをExcel用に整え、リスト形式で出力して読みやすくする
+            clean_text = main_text.replace("<br>", "\n").strip()
+            # 文章を適切に分割して行に分ける（1セルに詰め込みすぎない対策）
+            analysis_rows = [{"セクション": "分析結果全文", "内容": clean_text}]
+            
+            df_analysis = pd.DataFrame(analysis_rows)
+            df_analysis.to_excel(writer, index=False, sheet_name='①サイト解析')
+            
+            # Excelの列幅を調整（簡易版）
+            sheet = writer.sheets['①サイト解析']
+            sheet.column_dimensions['A'].width = 20
+            sheet.column_dimensions['B'].width = 80
+
+            # --- ②〜⑥ 各データシートの作成 ---
             if df_all is not None:
-                for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
+                # 広告文
+                for s, t in [('②広告文案','見出し'),('③説明文案','説明文'),('④キーワード','キーワード')]:
                     tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
-                    if not tmp.empty: tmp.to_excel(writer, index=False, sheet_name=s)
+                    if not tmp.empty:
+                        tmp.to_excel(writer, index=False, sheet_name=s)
                 
+                # アセット
                 tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
-                if not tmp_a.empty: tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
+                if not tmp_a.empty:
+                    tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
+
+        # 書き込みが完了してからデータを取得
+        excel_data = out.getvalue()
         
-        st.download_button("📊 解析結果(Excel)をダウンロード", data=out.getvalue(), file_name="ad_plan.xlsx")
-    except:
-        st.error("ダウンロードファイルの作成に失敗しました。")
+        # ダウンロードボタンの表示
+        st.download_button(
+            label="📊 解析結果(Excel)をダウンロード",
+            data=excel_data,
+            file_name="ad_strategy_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.error(f"Excel作成中にエラーが発生しました: {e}")
 
     # 4. タブ表示
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
@@ -269,3 +294,4 @@ if st.session_state.ad_result:
 
     with st.expander("🛠 AIの生出力を確認"):
         st.code(res_text)
+
