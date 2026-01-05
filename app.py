@@ -251,14 +251,24 @@ if st.session_state.ad_result:
         safe_table_display(df_all, '説明文', {'Content': '説明文案'})
         st.markdown('</div>', unsafe_allow_html=True)
 
-    with tab3:
+with tab3:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
-        safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
-        st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
-        safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'})
-        st.markdown(apply_decoration("⑥コールアウトアセット"), unsafe_allow_html=True)
-        c6 = main_text.split("⑥")[1] if "⑥" in main_text else ""
-        st.markdown(apply_decoration(c6), unsafe_allow_html=True)
+        
+        # ④ キーワード
+        if df_all is not None:
+            st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
+            safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
+            
+            st.divider() # 区切り線
+            
+            # ⑤ 構造化スニペット
+            st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
+            safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'})
+            
+            st.divider() # 区切り線
+            
+            # ⑥ コールアウトアセット（ここを修正）
+            # 文章から抜き出すのではなく、見出し等と同様に判定付き表示(dynamic_ad_display)を使う
+            dynamic_ad_display(df_all, 'コールアウト', "⑥コールアウトアセット")
+            
         st.markdown('</div>', unsafe_allow_html=True)
-
