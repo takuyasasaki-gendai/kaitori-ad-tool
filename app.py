@@ -225,49 +225,58 @@ if st.session_state.ad_result:
         except:
             st.warning("一部のデータ形式が正しく読み込めませんでした。")
 
-    # 3. Excelファイルの作成（確実に全データを含める）
+   # 3. Excelファイルの作成（シート名を標準文字に変更して確実性を高める）
     try:
         out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            # --- ① サイト解析シートの作成 ---
-            # 改行コードをExcel用に整え、リスト形式で出力して読みやすくする
-            clean_text = main_text.replace("<br>", "\n").strip()
-            # 文章を適切に分割して行に分ける（1セルに詰め込みすぎない対策）
-            analysis_rows = [{"セクション": "分析結果全文", "内容": clean_text}]
-            
-            df_analysis = pd.DataFrame(analysis_rows)
-            df_analysis.to_excel(writer, index=False, sheet_name='①サイト解析')
-            
-            # Excelの列幅を調整（簡易版）
-            sheet = writer.sheets['①サイト解析']
-            sheet.column_dimensions['A'].width = 20
-            sheet.column_dimensions['B'].width = 80
-
-            # --- ②〜⑥ 各データシートの作成 ---
-            if df_all is not None:
-                # 広告文
-                for s, t in [('②広告文案','見出し'),('③説明文案','説明文'),('④キーワード','キーワード')]:
-                    tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
-                    if not tmp.empty:
-                        tmp.to_excel(writer, index=False, sheet_name=s)
-                
-                # アセット
-                tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
-                if not tmp_a.empty:
-                    tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
-
-        # 書き込みが完了してからデータを取得
-        excel_data = out.getvalue()
+        # サイト分析のテキストを事前に処理
+        # HTMLタグを除去し、プレーンテキストにする
+        clean_analysis_text = main_text.replace("<br>", "\n").replace("<b>", "").replace("</b>", "").strip()
         
-        # ダウンロードボタンの表示
+        if not clean_analysis_text:
+            clean_analysis_text = "解析結果の取得に失敗しました。"
+
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            # --- 1. サイト解析シート (シート名から特殊文字 ① を除去) ---
+            df_analysis = pd.DataFrame([["分析結果全文", clean_analysis_text]], columns=["項目", "内容"])
+            df_analysis.to_excel(writer, index=False, sheet_name='1_サイト解析')
+            
+            # 列の幅を調整（見やすくするため）
+            ws_analysis = writer.sheets['1_サイト解析']
+            ws_analysis.column_dimensions['A'].width = 15
+            ws_analysis.column_dimensions['B'].width = 100
+
+            # --- 2. 広告文・キーワード・アセットシート ---
+            if df_all is not None:
+                # ② 広告文（見出し）
+                df_h = df_all[df_all['Type'].astype(str).str.contains('見出し', na=False, case=False)].copy()
+                if not df_h.empty:
+                    df_h.to_excel(writer, index=False, sheet_name='2_広告文案_見出し')
+                
+                # ③ 説明文
+                df_d = df_all[df_all['Type'].astype(str).str.contains('説明文', na=False, case=False)].copy()
+                if not df_d.empty:
+                    df_d.to_excel(writer, index=False, sheet_name='3_説明文案')
+                
+                # ④ キーワード
+                df_k = df_all[df_all['Type'].astype(str).str.contains('キーワード', na=False, case=False)].copy()
+                if not df_k.empty:
+                    df_k.to_excel(writer, index=False, sheet_name='4_キーワード')
+                
+                # ⑤⑥ アセット（スニペット・コールアウト）
+                df_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
+                if not df_a.empty:
+                    df_a.to_excel(writer, index=False, sheet_name='5_6_アセット')
+
+        # ダウンロードボタンの表示（mimeタイプを明示）
         st.download_button(
             label="📊 解析結果(Excel)をダウンロード",
-            data=excel_data,
+            data=out.getvalue(),
             file_name="ad_strategy_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except Exception as e:
-        st.error(f"Excel作成中にエラーが発生しました: {e}")
+        # 万が一エラーが出た場合に原因を表示
+        st.error(f"Excel作成エラー: {e}")
 
     # 4. タブ表示
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
@@ -294,4 +303,5 @@ if st.session_state.ad_result:
 
     with st.expander("🛠 AIの生出力を確認"):
         st.code(res_text)
+
 
