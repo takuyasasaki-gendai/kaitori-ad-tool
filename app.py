@@ -211,64 +211,68 @@ if st.button("分析＆生成スタート"):
 
 # --- 結果表示 ---
 if st.session_state.ad_result:
+    res_text = st.session_state.ad_result
     df_all = None
-    if "[DATA_START]" in st.session_state.ad_result:
+    
+    # データ抽出
+    if "[DATA_START]" in res_text:
         try:
-            raw_csv = st.session_state.ad_result.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
+            raw_csv = res_text.split("[DATA_START]")[1].split("[DATA_END]")[0].strip()
             raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
             df_all = pd.read_csv(io.StringIO(raw_csv))
             df_all.columns = df_all.columns.str.strip()
         except: pass
 
+    # --- ダウンロードファイル作成 (Excel) ---
     if df_all is not None:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            # 1. サイト解析内容をシートに追加
+            main_analysis_text = res_text.split("[DATA_START]")[0].strip()
+            # HTMLタグや余計な記号を除去してテキストとして保存
+            clean_analysis = main_analysis_text.replace("<br>", "\n").replace("<b>", "").replace("</b>", "")
+            df_analysis = pd.DataFrame([{"項目": "サイト分析結果", "内容": clean_analysis}])
+            df_analysis.to_excel(writer, index=False, sheet_name='①サイト解析')
+
+            # 2. 広告文・キーワードを各シートに追加
             for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
                 tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
                 if not tmp.empty:
                     tmp.index = range(1, len(tmp) + 1)
+                    # StatusやHintもDLに含める
                     tmp.to_excel(writer, index=True, index_label="No", sheet_name=s)
+            
+            # 3. アセットをシートに追加
             tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
             if not tmp_a.empty:
                 tmp_a.index = range(1, len(tmp_a) + 1)
                 tmp_a.to_excel(writer, index=True, index_label="No", sheet_name='⑤⑥アセット')
-        st.download_button("📊 Excel形式でダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
 
-    main_text = st.session_state.ad_result.split("[DATA_START]")[0]
+        st.download_button("📊 解析結果をExcelでダウンロード", data=out.getvalue(), file_name="ad_strategy_full.xlsx")
+
+    # --- 画面表示用のタブ設定 ---
+    main_text = res_text.split("[DATA_START]")[0]
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        c1 = main_text.split("②")[0] if "②" in main_text else main_text
-        st.markdown(apply_decoration(c1), unsafe_allow_html=True)
+        # 解析文章の表示
+        st.markdown(apply_decoration(main_text), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
-        st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown(apply_decoration("②広告文案（見出し）"), unsafe_allow_html=True)
-        safe_table_display(df_all, '見出し', {'Content': '広告見出し案'})
-        st.markdown(apply_decoration("③説明文案"), unsafe_allow_html=True)
-        safe_table_display(df_all, '説明文', {'Content': '説明文案'})
-        st.markdown('</div>', unsafe_allow_html=True)
+        if df_all is not None:
+            dynamic_ad_display(df_all, '見出し', "②広告文案（見出し）")
+            st.divider()
+            dynamic_ad_display(df_all, '説明文', "③説明文案")
 
-with tab3:
-        st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        
-        # ④ キーワード
+    with tab3:
         if df_all is not None:
             st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
             safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
-            
-            st.divider() # 区切り線
-            
-            # ⑤ 構造化スニペット
+            st.divider()
             st.markdown(apply_decoration("⑤構造化スニペット"), unsafe_allow_html=True)
             safe_table_display(df_all, 'スニペット', {'Content':'種類','Details':'値'})
-            
-            st.divider() # 区切り線
-            
-            # ⑥ コールアウトアセット（ここを修正）
-            # 文章から抜き出すのではなく、見出し等と同様に判定付き表示(dynamic_ad_display)を使う
+            st.divider()
             dynamic_ad_display(df_all, 'コールアウト', "⑥コールアウトアセット")
-            
-        st.markdown('</div>', unsafe_allow_html=True)
+
