@@ -109,44 +109,61 @@ async def fetch_and_clean_content(url):
             await browser.close()
             return f"Error: {str(e)}"
 
-def generate_ad_plan(site_text, api_key):
+# --- 4. ロジック関数 (プロンプトをより厳格に修正) ---
+def generate_ad_plan(own_text, comp_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
-        model = genai.GenerativeModel(target_model)
+        model = genai.GenerativeModel("models/gemini-1.5-flash")
         
+        # プロンプトをより構造化し、ミスを防ぐ
         prompt = f"""
-        あなたは買取広告コンサルタントです。以下のサイトを分析し、Google検索広告プランを作成してください。
-        
-        【構成】
-        冒頭：Google検索広告プラン：(サイト名)
-        ①サイト解析結果：強み、課題、改善案を含めて。
-        ②広告文（DL）：見出し15個
-        ③説明文（DL）：4個
-        ④キーワード（DL）：20個以上。各キーワードの「推定CPC（具体的数値：〇〇円）」と「優先度」を設定。
-        ⑤構造化スニペット
-        ⑥コールアウトアセット
+        あなたは買取広告コンサルタントです。自社サイトと競合サイトを比較分析し、Google検索広告プランを作成してください。
 
-        【重要：データ書き出しルール】
-        最後に必ず [DATA_START] と [DATA_END] で囲んで、以下のCSVデータ形式のみを出力してください。
-        Type,Content,Details,Other1,Other2
-        見出し,(内容),,,
-        説明文,(内容),,,
-        キーワード,(キーワード),(マッチ),(具体的数値：〇〇円),(優先度)
-        スニペット,(種類),(値),,
-        コールアウト,(内容),,,
+        【解析対象】
+        自社サイト: {own_text}
+        競合サイト: {comp_text}
 
-        ※注意：Other1（推定CPC）には、必ず「150円」のような具体的な数値を円単位で記入してください。「CPC想定」などは厳禁です。
+        【指示】
+        1. 広告ランク最大化のため、キーワードを見出し1に含め、競合と差別化した訴求を優先せよ。
+        2. 判定(Status): 競合より劣る・平凡なら「LOSS」、勝っているなら「WIN」とせよ。
+        3. 改善案(Hint): LOSSの場合、どう書き換えれば広告ランクが上がるか具体的に。
 
-        解析サイト：{site_text}
+        【出力形式】
+        最初にサイト解析文章を書き、その後に必ず以下の形式でデータを書き出してください。
+        ※コードブロック（```）は使わず、直接テキストで書いてください。
+
+        [DATA_START]
+        Type,Content,Details,Other1,Other2,Status,Hint
+        見出し,(30文字以内),,,WIN,
+        見出し,(30文字以内),,,LOSS,(改善案)
+        説明文,(90文字以内),,,WIN,
+        キーワード,(単語),(マッチタイプ),(CPC数値),(優先度),WIN,
+        スニペット,(種類),(値),,,WIN,
+        コールアウト,(内容),,,,WIN,
+        [DATA_END]
         """
         response = model.generate_content(prompt)
         return response.text
-    except exceptions.ResourceExhausted:
-        return "ERROR_429: 無料枠の上限に達しました。しばらくお待ちください。"
     except Exception as e:
         return f"AI生成エラー: {str(e)}"
+
+# --- 結果表示部分のパース処理（より頑丈に） ---
+if st.session_state.ad_result:
+    res_text = st.session_state.ad_result
+    df_all = None
+
+    # [DATA_START] を探す。なければ「Type,Content」などの文字列を探す
+    start_tag = "[DATA_START]"
+    end_tag = "[DATA_END]"
+    
+    if start_tag in res_text and end_tag in res_text:
+        try:
+            raw_csv = res_text.split(start_tag)[1].split(end_tag)[0].strip()
+            # 余計なバッククォートやマークダウン記法を除去
+            raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
+            df_all = pd.read_csv(io.StringIO(raw_csv))
+        except Exception as e:
+            st.warning(f"データの読み込みに失敗しました（形式エラー）。生データを確認してください。")
 
 def safe_table_display(df, type_name, col_mapping):
     try:
@@ -244,3 +261,4 @@ if st.session_state.ad_result:
         c6 = main_text.split("⑥")[1] if "⑥" in main_text else ""
         st.markdown(apply_decoration(c6), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
