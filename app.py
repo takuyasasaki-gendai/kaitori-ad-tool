@@ -110,27 +110,25 @@ async def fetch_and_clean_content(url):
             return f"Error: {str(e)}"
 
 # --- 4. ロジック関数 (プロンプトをより厳格に修正) ---
-def generate_ad_plan(own_text, comp_text, api_key):
+def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("models/gemini-1.5-flash")
         
         prompt = f"""
-        あなたは買取広告コンサルタントです。自社サイトと競合サイトを比較分析し、Google検索広告プランを作成してください。
+        あなたは買取広告コンサルタントです。以下のサイトを分析し、Google広告の「品質スコア」と「広告ランク」を最大化するプランを作成してください。
 
-        【解析対象】
-        自社サイト: {own_text}
-        競合サイト: {comp_text}
+        【分析対象】
+        {site_text}
 
         【指示】
-        1. 広告ランク最大化のため、キーワードを見出し1に含め、競合と差別化した訴求を優先せよ。
-        2. 解析文は簡潔にまとめ、後半のデータ作成に十分な文字数を残せ。
+        1. キーワードを見出し1に含め、LPとの整合性を高めること。
+        2. ユーザーの検索意図（早く売りたい、高く売りたい等）に合致する訴求を作成せよ。
+        3. [STATUS]判定：具体的数値や強力なベネフィットがあるなら「WIN」、一般的すぎる表現なら「LOSS」とせよ。
 
-        【重要：出力形式】
-        必ず以下の構成で出力してください。データ部分はCSV形式で[DATA_START]と[DATA_END]で囲んでください。
-        コードブロック(```)は絶対に使わないでください。
-
-        (ここに解析文を短く記載)
+        【構成】
+        最初にサイト解析（強み・課題・改善案）を書き、その後に必ず[DATA_START]と[DATA_END]で囲んでCSVデータを出力してください。
+        コードブロック(```)は使用禁止です。
 
         [DATA_START]
         Type,Content,Details,Other1,Other2,Status,Hint
@@ -208,56 +206,50 @@ if st.button("分析＆生成スタート"):
                 st.session_state.ad_result = res
                 st.balloons()
 
-# --- 結果表示 ---
+# --- 結果表示（ここを差し替え） ---
 if st.session_state.ad_result:
     res_text = st.session_state.ad_result
     df_all = None
     
-    # 強力な抽出ロジック：大文字小文字やスペースの揺れを許容
+    # 1. 解析テキストの抽出
+    main_text = res_text.split("[DATA_START]")[0].strip() if "[DATA_START]" in res_text else res_text
+
+    # 2. データのパース（正規表現で安全に抽出）
     pattern = re.compile(r"\[DATA_START\](.*?)\[DATA_END\]", re.DOTALL | re.IGNORECASE)
     match = pattern.search(res_text)
-
     if match:
         try:
-            raw_csv = match.group(1).strip()
-            # AIが勝手に入れるMarkdownのバッククォートを削除
-            raw_csv = raw_csv.replace("```csv", "").replace("```", "").strip()
-            # pandasで読み込み
+            raw_csv = match.group(1).strip().replace("```csv", "").replace("```", "").strip()
             df_all = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip')
-            # カラム名の空白を削除
             df_all.columns = [c.strip() for c in df_all.columns]
-        except Exception as e:
-            st.error(f"データの形式変換に失敗しました。AIの出力が正しくありません。")
-    else:
-        st.warning("データタグ [DATA_START] が見つかりませんでした。解析文のみを表示します。")
+        except:
+            st.warning("一部のデータ形式が正しく読み込めませんでした。")
 
-    # --- ダウンロードファイル作成 (Excel) ---
-    # df_allがNoneでも、解析文章だけでもダウンロードできるように修正
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as writer:
-        main_analysis_text = res_text.split("[DATA_START]")[0].strip()
-        df_analysis = pd.DataFrame([{"項目": "サイト分析結果", "内容": main_analysis_text}])
-        df_analysis.to_excel(writer, index=False, sheet_name='①サイト解析')
+    # 3. Excel作成とダウンロードボタン
+    try:
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            # ① サイト解析シート
+            pd.DataFrame([{"解析項目": "内容", "分析結果": main_text}]).to_excel(writer, index=False, sheet_name='①サイト解析')
+            # 各データシート
+            if df_all is not None:
+                for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
+                    tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
+                    if not tmp.empty: tmp.to_excel(writer, index=False, sheet_name=s)
+                
+                tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
+                if not tmp_a.empty: tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
+        
+        st.download_button("📊 解析結果(Excel)をダウンロード", data=out.getvalue(), file_name="ad_plan.xlsx")
+    except:
+        st.error("ダウンロードファイルの作成に失敗しました。")
 
-        if df_all is not None:
-            for s, t in [('②広告文','見出し'),('③説明文','説明文'),('④キーワード','キーワード')]:
-                tmp = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False)].copy()
-                if not tmp.empty:
-                    tmp.to_excel(writer, index=False, sheet_name=s)
-            
-            tmp_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
-            if not tmp_a.empty:
-                tmp_a.to_excel(writer, index=False, sheet_name='⑤⑥アセット')
-
-    # ダウンロードボタンは常に表示（またはdf_allがあればリッチに）
-    st.download_button("📊 解析結果をExcelでダウンロード", data=out.getvalue(), file_name="ad_strategy.xlsx")
-
-    # --- タブ表示 ---
+    # 4. タブ表示
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
     with tab1:
         st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown(apply_decoration(main_text if 'main_text' in locals() else res_text.split("[DATA_START]")[0]), unsafe_allow_html=True)
+        st.markdown(apply_decoration(main_text), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
@@ -266,7 +258,7 @@ if st.session_state.ad_result:
             st.divider()
             dynamic_ad_display(df_all, '説明文', "③説明文案")
         else:
-            st.info("広告文データの生成に失敗しました。下の「生データ」を確認してください。")
+            st.info("広告文データが生成されませんでした。")
 
     with tab3:
         if df_all is not None:
@@ -274,7 +266,6 @@ if st.session_state.ad_result:
             safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
             st.divider()
             dynamic_ad_display(df_all, 'コールアウト', "⑥コールアウトアセット")
-            
-    # デバッグ用：AIが何を出したか見れるようにする（解決したら消してOKです）
+
     with st.expander("🛠 AIの生出力を確認"):
         st.code(res_text)
