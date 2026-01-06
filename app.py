@@ -225,7 +225,7 @@ if st.session_state.ad_result:
         except:
             st.warning("一部のデータ形式が正しく読み込めませんでした。")
 
-   # 3. Excelファイルの作成（シート名を標準文字に変更して確実性を高める）
+# 3. Excelファイルの作成（シート名を標準文字に変更して確実性を高める）
     try:
         out = io.BytesIO()
         # サイト分析のテキストを事前に処理
@@ -303,5 +303,6 @@ if st.session_state.ad_result:
 
     with st.expander("🛠 AIの生出力を確認"):
         st.code(res_text)
+
 
 
