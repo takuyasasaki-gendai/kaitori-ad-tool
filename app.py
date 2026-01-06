@@ -174,59 +174,90 @@ if st.button("分析＆生成スタート"):
             res = generate_ad_plan(cleaned, api_key)
             st.session_state.ad_result = res
             st.balloons()
-
-# --- 5. 結果表示ロジック ---
+            
+# --- 5. 結果表示ロジック (不具合を完全に解消する強化版) ---
 if st.session_state.ad_result:
     res_text = st.session_state.ad_result
     df_all = None
     
-    # 解析文とデータの切り分け
-    main_text = res_text.split("[DATA_START]")[0].strip() if "[DATA_START]" in res_text else res_text
-    
-    # CSVのパース
+    # 1. 解析テキストの抽出（[DATA_START]の前を確実に取得）
+    main_text = ""
+    if "[DATA_START]" in res_text:
+        main_text = res_text.split("[DATA_START]")[0].strip()
+    else:
+        main_text = res_text # タグがない場合は全文
+
+    # 2. CSVデータのパース（柔軟性を最大化）
     pattern = re.compile(r"\[DATA_START\](.*?)\[DATA_END\]", re.DOTALL | re.IGNORECASE)
     match = pattern.search(res_text)
     if match:
         try:
-            raw_csv = match.group(1).strip().replace("```csv", "").replace("```", "").strip()
-            df_all = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip')
+            raw_csv = match.group(1).strip()
+            raw_csv = raw_csv.replace("```csv", "").replace("```", "").strip()
+            
+            # AIがカンマの数を間違えても読み込めるように io.StringIO を前処理
+            lines = raw_csv.splitlines()
+            cleaned_lines = []
+            for line in lines:
+                # 行に含まれるアスタリスクを除去
+                line = line.replace("**", "")
+                # カンマが少ない行にカンマを補填（列数を7列に固定）
+                comma_count = line.count(",")
+                if comma_count < 6:
+                    line += "," * (6 - comma_count)
+                cleaned_lines.append(line)
+            
+            final_csv = "\n".join(cleaned_lines)
+            df_all = pd.read_csv(io.StringIO(final_csv), on_bad_lines='skip', engine='python')
             df_all.columns = [c.strip() for c in df_all.columns]
-            # 全データから ** を除去
-            df_all = df_all.applymap(lambda x: str(x).replace("**", "").strip() if pd.notnull(x) else x)
-        except:
-            st.warning("CSVデータの読み込みに一部失敗しました。")
+            
+            # 全データから不要な装飾を除去
+            df_all = df_all.applymap(lambda x: str(x).replace("**", "").strip() if pd.notnull(x) else "")
+        except Exception as e:
+            st.warning(f"データ解析中に一部不備が見つかりました: {e}")
 
-    # --- Excel作成 (この if ブロック内で確実に実行) ---
+    # --- 3. Excel作成 (確実に全シートを出力) ---
     try:
-        out = io.BytesIO()
-        clean_analysis_text = main_text.replace("<br>", "\n").replace("<b>", "").replace("</b>", "").strip()
-        
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            # シート1: サイト解析
-            df_analysis = pd.DataFrame([["分析結果全文", clean_analysis_text]], columns=["項目", "内容"])
-            df_analysis.to_excel(writer, index=False, sheet_name='1_サイト解析')
+        excel_out = io.BytesIO()
+        # openpyxlを直接制御してシートを作成
+        with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
+            # 1枚目: サイト解析 (データフレームを介さず書き込む方式)
+            clean_analysis = main_text.replace("<br>", "\n").replace("<b>", "").replace("</b>", "").strip()
+            df_tmp_analysis = pd.DataFrame([["分析結果全文", clean_analysis]], columns=["項目", "内容"])
+            df_tmp_analysis.to_excel(writer, index=False, sheet_name='1_サイト解析')
+            
+            # シートの列幅を調整
             ws = writer.sheets['1_サイト解析']
             ws.column_dimensions['B'].width = 100
 
             if df_all is not None:
-                # 各種シート
-                sheet_mapping = [('見出し', '2_広告文案_見出し'), ('説明文', '3_説明文案'), 
-                                 ('キーワード', '4_キーワード'), ('スニペット|コールアウト', '5_6_アセット')]
-                for target, s_name in sheet_mapping:
-                    tmp = df_all[df_all['Type'].astype(str).str.contains(target, na=False, case=False)].copy()
-                    if not tmp.empty:
-                        tmp.to_excel(writer, index=False, sheet_name=s_name)
-        
+                # 2枚目以降: 広告文・キーワード・アセット
+                targets = [
+                    ('見出し', '2_広告文案_見出し'),
+                    ('説明文', '3_説明文案'),
+                    ('キーワード', '4_キーワード'),
+                    ('スニペット|コールアウト', '5_6_アセット')
+                ]
+                for search_key, sheet_name in targets:
+                    mask = df_all['Type'].astype(str).str.contains(search_key, na=False, case=False)
+                    tmp_df = df_all[mask].copy()
+                    if not tmp_df.empty:
+                        tmp_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                    else:
+                        # データが空でもシートだけは作成してエラーを防ぐ
+                        pd.DataFrame([["なし"]]).to_excel(writer, index=False, sheet_name=sheet_name)
+
+        # ダウンロードボタンの表示
         st.download_button(
             label="📊 解析結果(Excel)をダウンロード",
-            data=out.getvalue(),
+            data=excel_out.getvalue(),
             file_name="ad_strategy_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except Exception as e:
-        st.error(f"Excel作成エラー: {e}")
+        st.error(f"Excel出力エラー: {e}")
 
-    # --- タブ表示 ---
+    # --- 4. 画面表示（タブ） ---
     tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
 
     with tab1:
@@ -240,14 +271,18 @@ if st.session_state.ad_result:
             st.divider()
             dynamic_ad_display(df_all, '説明文', "③説明文案")
         else:
-            st.info("広告文データがありません。")
+            st.info("広告文のデータが生成されませんでした。")
 
     with tab3:
         if df_all is not None:
             st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
             safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
             st.divider()
+            # コールアウトアセットの表示（フィルタを「コールアウト」に限定せず広く取る）
             dynamic_ad_display(df_all, 'コールアウト', "⑥コールアウトアセット")
+        else:
+            st.info("キーワード・アセットのデータがありません。")
 
-    with st.expander("🛠 AIの生出力を確認"):
+    # デバッグ：AIが本当に何を出したかを確認
+    with st.expander("🛠 AIからの生レスポンス（不具合調査用）"):
         st.code(res_text)
