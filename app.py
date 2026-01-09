@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (ダークテーマ & ゴールドUI) ---
+# --- 2. CSSデザイン ---
 st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
@@ -34,18 +34,18 @@ st.markdown("""
     .report-box { padding: 20px; border-radius: 0px; background-color: transparent; margin-bottom: 25px; line-height: 1.8; }
     .loss-text { color: #ff4b4b !important; font-weight: bold; text-decoration: underline; }
     .section-heading { color: #ffffff !important; font-weight: bold !important; font-size: 1.25em !important; margin-top: 35px; border-left: 5px solid #D4AF37; padding-left: 15px; display: block; }
-    .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 3. 補助関数 ---
 def clean_text(text):
-    """アスタリスクやマークダウン装飾を完全に除去"""
+    """アスタリスクやマークダウン装飾、HTMLを完全に除去"""
     if not text: return ""
-    return str(text).replace("**", "").replace("###", "").replace("`", "").strip()
+    t = str(text).replace("**", "").replace("###", "").replace("`", "").replace("<br>", "\n")
+    t = re.sub(r'<[^>]*?>', '', t) # HTMLタグ除去
+    return t.strip()
 
 def apply_decoration(text):
-    """画面表示用の装飾適用"""
     if not text: return ""
     text = clean_text(text)
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
@@ -53,15 +53,14 @@ def apply_decoration(text):
     return text
 
 def dynamic_ad_display(df, type_keyword, label):
-    """判定付き動的表示 (アセット等の表示漏れ対策)"""
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
     if df is None or df.empty:
         st.info("データがありません。")
         return
-    # 正規表現で「コールアウト」「アセット」「スニペット」等に柔軟にヒットさせる
+    # 検索キーワードを広範にして表示漏れを防ぐ
     sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
     if sub_df.empty:
-        st.write(f"対象項目（{type_keyword}）は見つかりませんでした。生データを確認してください。")
+        st.write(f"対象項目（{type_keyword}）は見つかりませんでした。")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         cols = st.columns([0.1, 0.7, 0.2])
@@ -78,7 +77,6 @@ def dynamic_ad_display(df, type_keyword, label):
             cols[2].write("✅ WIN")
 
 def safe_table_display(df, type_keyword, col_mapping):
-    """キーワード用テーブル表示"""
     if df is None or df.empty: return
     sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
     if sub_df.empty: return
@@ -86,7 +84,7 @@ def safe_table_display(df, type_keyword, col_mapping):
     sub_df.index = range(1, len(sub_df) + 1)
     st.table(sub_df[[c for c in col_mapping.keys() if c in sub_df.columns]].rename(columns=col_mapping))
 
-# --- 4. 生成・スクレイピングロジック ---
+# --- 4. 生成・スクレイピング ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -105,26 +103,34 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        # モデル名は最新安定版を使用
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        
+        # モデルの自動検知（404エラー対策）
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        target_model = "models/gemini-1.5-flash" # fallback
+        for m in ["models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-pro"]:
+            if m in available_models:
+                target_model = m
+                break
+        
+        model = genai.GenerativeModel(target_model)
         prompt = f"""
-        買取広告コンサルタントとして以下のサイトを分析し、広告ランクを最大化するプランを作成せよ。
+        買取広告コンサルタントとして分析し、広告プランを作成せよ。
         分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を出力せよ。
-        装飾記号 ** は禁止。アセットは必ず 'コールアウト' または 'スニペット' というType名を含めること。
-        サイト内容: {site_text}
+        装飾記号 ** は禁止。サイト内容: {site_text}
         """
-        return model.generate_content(prompt).text
-    except Exception as e: return f"Error: {str(e)}"
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e: return f"AI生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
-st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
+st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 with st.sidebar:
     st.title("Settings")
     if st.text_input("Password", type="password") != "password": st.stop()
 
-st.title("検索広告案 自動生成ツール")
+st.title("広告プラン自動生成ツール")
 url_in = st.text_input("LPのURLを入力")
 
 if st.button("生成スタート"):
@@ -139,7 +145,6 @@ if st.session_state.ad_result:
     res = st.session_state.ad_result
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     
-    # データ解析
     df_all = None
     match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
     if match:
@@ -148,37 +153,32 @@ if st.session_state.ad_result:
         df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
         df_all.columns = [c.strip() for c in df_all.columns]
 
-    # Excel作成 (1シート目にサイト解析を強制挿入)
+    # Excel作成（最優先：サイト解析を1シート目に）
     try:
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            # 1. サイト解析
-            pd.DataFrame([["サイト分析結果", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
-            # 列幅調整
-            writer.sheets["1_サイト解析"].column_dimensions['B'].width = 100
-
+            # 1. サイト解析シート（プレーンテキストで確実に）
+            pd.DataFrame([["分析項目", "詳細内容"], ["サイト分析結果全文", clean_text(main_text)]]).to_excel(writer, index=False, header=False, sheet_name="1_サイト解析")
+            # 2. 以降のデータ
             if df_all is not None:
-                sheet_maps = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('スニペット|コールアウト','5_6_アセット')]
+                sheet_maps = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('スニペット|コールアウト|アセット','5_6_アセット')]
                 for t, sn in sheet_maps:
                     sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True)]
                     if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
-        
-        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
+        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_report.xlsx")
     except Exception as e: st.error(f"Excel作成失敗: {e}")
 
-    # タブ表示
-    t1, t2, t3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
-    with t1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
-    with t2:
+    tab1, tab2, tab3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
+    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
+    with tab2:
         if df_all is not None:
             dynamic_ad_display(df_all, '見出し', "②広告文（見出し）")
             st.divider()
             dynamic_ad_display(df_all, '説明文', "③説明文案")
-    with t3:
+    with tab3:
         if df_all is not None:
             safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチ','Other1':'推定CPC','Other2':'優先度'})
             st.divider()
-            # フィルタを広く取ることで表示漏れを防止
+            # 検索ワードを広げてアセットを表示
             dynamic_ad_display(df_all, 'コールアウト|スニペット|アセット', "⑤⑥アセット（コールアウト・スニペット）")
-
     with st.expander("🛠 生データ確認"): st.code(res)
