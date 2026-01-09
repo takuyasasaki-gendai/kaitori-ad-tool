@@ -102,16 +102,23 @@ def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # 利用可能なモデルをチェックし、最適なもの（flash）を選択する
-        model_name = "gemini-1.5-flash" # デフォルト
+        # --- 利用可能なモデルを動的に取得するロジック ---
+        model_name = "gemini-1.5-flash"  # デフォルト値
         try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            # gemini-1.5-flash を含む最新のモデル名を探す
-            matching_models = [m for m in available_models if "gemini-1.5-flash" in m]
-            if matching_models:
-                model_name = matching_models[0] # 見つかった最新の名称を使用
-        except:
-            pass # リスト取得に失敗した場合はデフォルトを使用
+            # APIがサポートしているモデルリストを取得
+            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            # 優先順位：1. flashの最新版 -> 2. flash -> 3. 最初に見つかった生成可能モデル
+            flash_models = [m for m in models if "flash" in m]
+            if any("latest" in m for m in flash_models):
+                model_name = [m for m in flash_models if "latest" in m][0]
+            elif flash_models:
+                model_name = flash_models[0]
+            elif models:
+                model_name = models[0]
+        except Exception as list_err:
+            # モデルリスト取得自体が失敗した場合は、最新のエイリアスを試す
+            model_name = "gemini-1.5-flash-latest"
 
         model = genai.GenerativeModel(model_name)
         
@@ -138,7 +145,8 @@ def generate_ad_plan(site_text, api_key):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"AI生成エラー: {str(e)}"
+        # エラーが発生した際、どのモデル名で失敗したかも表示するように修正
+        return f"AI生成エラー ({model_name}): {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
@@ -201,4 +209,5 @@ if st.session_state.ad_result:
             dynamic_ad_display(df_all, 'コールアウト|スニペット', "⑤⑥アセット（コールアウト・スニペット）")
 
     with st.expander("🛠 生データ確認"): st.code(res)
+
 
