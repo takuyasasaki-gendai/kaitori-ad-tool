@@ -101,10 +101,44 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("models/gemini-1.5-flash")
-        prompt = f"買取広告プランを作成せよ。分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を含めよ。装飾記号 ** は禁止。サイト内容: {site_text}"
-        return model.generate_content(prompt).text
-    except Exception as e: return f"Error: {str(e)}"
+        
+        # 利用可能なモデルをチェックし、最適なもの（flash）を選択する
+        model_name = "gemini-1.5-flash" # デフォルト
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            # gemini-1.5-flash を含む最新のモデル名を探す
+            matching_models = [m for m in available_models if "gemini-1.5-flash" in m]
+            if matching_models:
+                model_name = matching_models[0] # 見つかった最新の名称を使用
+        except:
+            pass # リスト取得に失敗した場合はデフォルトを使用
+
+        model = genai.GenerativeModel(model_name)
+        
+        prompt = f"""
+        あなたは買取広告コンサルタントです。以下のサイトを分析し、Google広告の「品質スコア」と「広告ランク」を最大化するプランを作成してください。
+
+        【分析対象】
+        {site_text}
+
+        【指示】
+        1. キーワードを見出し1に含め、LPとの整合性を高めること。
+        2. [STATUS]判定：具体的数値や強力なベネフィットがあるなら「WIN」、一般的すぎる表現なら「LOSS」とせよ。
+        3. CSVデータ内には ** などの装飾記号は絶対に入れないこと。
+
+        【構成】
+        最初にサイト解析（強み・課題・改善案）を書き、その後に必ず[DATA_START]と[DATA_END]で囲んでCSVデータを出力してください。
+        Type,Content,Details,Other1,Other2,Status,Hint の7列固定です。
+
+        [DATA_START]
+        Type,Content,Details,Other1,Other2,Status,Hint
+        見出し,サンプルテキスト,,,WIN,
+        [DATA_END]
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
@@ -167,3 +201,4 @@ if st.session_state.ad_result:
             dynamic_ad_display(df_all, 'コールアウト|スニペット', "⑤⑥アセット（コールアウト・スニペット）")
 
     with st.expander("🛠 生データ確認"): st.code(res)
+
