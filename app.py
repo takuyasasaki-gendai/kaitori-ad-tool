@@ -129,7 +129,7 @@ def generate_ad_plan(site_text, api_key):
         genai.configure(api_key=api_key)
         
         # --- 動的モデル選択ロジック ---
-        model_name = "gemini-1.5-flash-latest" # 推奨される最新エイリアス
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             # gemini-1.5-flashを含むモデルを検索
@@ -230,3 +230,4 @@ if st.session_state.ad_result:
             dynamic_ad_display(df_all, 'コールアウト|スニペット', "⑤⑥アセット（コールアウト・スニペット）")
     with st.expander("🛠 AIの生出力を確認"):
         st.code(res_text)
+
