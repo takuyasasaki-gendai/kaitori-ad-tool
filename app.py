@@ -8,6 +8,7 @@ import re
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+from google.api_core import exceptions
 
 # --- 1. 初期設定 ---
 @st.cache_resource
@@ -23,181 +24,286 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン ---
+# --- 2. CSSデザイン (指示通りのUIを維持) ---
 st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
-    .stDownloadButton>button { width: 100%; border-radius: 5px; height: 3.5em; background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #D4AF37; color: white !important; border: none; font-weight: bold; }
-    .report-box { padding: 20px; border-radius: 0px; background-color: transparent; margin-bottom: 25px; line-height: 1.8; border: 1px solid #333; }
-    .loss-text { color: #ff4b4b !important; font-weight: bold; text-decoration: underline; }
-    .section-heading { color: #ffffff !important; font-weight: bold !important; font-size: 1.25em !important; margin-top: 35px; border-left: 5px solid #D4AF37; padding-left: 15px; display: block; }
+
+    .stDownloadButton>button {
+        width: 100%; border-radius: 5px; height: 3.5em;
+        background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold;
+    }
+    .stDownloadButton>button p { color: #000000 !important; }
+
+    .stButton>button {
+        width: 100%; border-radius: 5px; height: 3em;
+        background-color: #D4AF37; color: white !important; border: none; font-weight: bold;
+    }
+
+    .plan-title {
+        color: #ffff00 !important;
+        font-size: 1.5em !important;
+        font-weight: bold !important;
+        margin-bottom: 25px !important;
+        display: block !important;
+        border-bottom: 2px solid #ffff00;
+        padding-bottom: 10px;
+    }
+
+    .section-heading {
+        color: #ffffff !important;
+        font-weight: bold !important;
+        font-size: 1.25em !important;
+        margin-top: 35px !important;
+        margin-bottom: 15px !important;
+        display: block !important;
+        border-left: 5px solid #D4AF37;
+        padding-left: 15px;
+    }
+
+    .underlined-keyword { text-decoration: underline; font-weight: bold; color: #ffd700 !important; }
+    .report-box { padding: 20px; border-radius: 0px; background-color: transparent; margin-bottom: 25px; line-height: 1.8; }
+    div[data-testid="stTable"] table { background-color: #1e1e1e !important; color: white !important; border: 1px solid #444; width: 100%; }
+    th { color: #D4AF37 !important; background-color: #333 !important; }
+    td { color: #ffffff !important; }
+    button[data-baseweb="tab"] p { color: #888 !important; }
+    button[aria-selected="true"] p { color: #D4AF37 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. 補助関数 ---
-def clean_text(text):
-    """不要なアスタリスク記号などを完全に除去"""
-    if not text: return ""
-    return str(text).replace("**", "").replace("###", "").replace("`", "").strip()
-
+# --- 3. 装飾適用関数 ---
 def apply_decoration(text):
     if not text: return ""
-    text = clean_text(text)
+    text = text.replace("#", "")
     text = re.sub(r'(①|②|③|④|⑤|⑥)([^\n<]+)', r'<span class="section-heading">\1\2</span>', text)
+    for kw in ["強み", "課題", "改善案"]:
+        text = text.replace(kw, f"<span class='underlined-keyword'>{kw}</span>")
+    text = re.sub(r'(Google検索広告プラン：[^\n<]+)', r'<span class="plan-title">\1</span>', text)
     text = text.replace("\n", "<br>")
     return text
 
-def dynamic_ad_display(df, type_keyword, label):
-    st.markdown(apply_decoration(label), unsafe_allow_html=True)
-    if df is None or df.empty:
-        st.info(f"{label} のデータがありません。")
-        return
-    # 正規表現で「コールアウト」「スニペット」「アセット」をすべて拾い上げる
-    sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
-    if sub_df.empty:
-        st.write(f"（{label} に該当する案がAIから出力されませんでした。生データを確認してください。）")
-        return
-    for i, (_, row) in enumerate(sub_df.iterrows(), 1):
-        cols = st.columns([0.1, 0.7, 0.2])
-        content = clean_text(row['Content'])
-        is_loss = "LOSS" in str(row.get('Status', '')).upper()
-        cols[0].write(i)
-        if is_loss:
-            cols[1].markdown(f"<span class='loss-text'>{content}</span>", unsafe_allow_html=True)
-            with cols[2]:
-                with st.popover("⚠️ 改善案"):
-                    st.write(clean_text(row.get('Hint', '調整が必要です')))
-        else:
-            cols[1].write(content)
-            cols[2].write("✅ WIN")
-
-def safe_table_display(df, type_keyword, col_mapping):
-    if df is None or df.empty: return
-    sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
-    if sub_df.empty: return
-    sub_df = sub_df.applymap(clean_text)
-    sub_df.index = range(1, len(sub_df) + 1)
-    st.table(sub_df[[c for c in col_mapping.keys() if c in sub_df.columns]].rename(columns=col_mapping))
-
-# --- 4. スクレイピング & 生成 ---
+# --- 4. ロジック関数 (スワイプ型LP対応のスクレイピング) ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"])
+        # スワイプ形式LPはモバイル表示が多いため、iPhoneとしてシミュレート
         context = await browser.new_context(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # 【重要】スワイプ/スクロール形式LPの全コンテンツを読み込ませるためのシミュレーション
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
-            soup = BeautifulSoup(await page.content(), "html.parser")
-            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            return " ".join(soup.get_text(separator=" ").split())[:4000]
-        except: return "解析エラー"
-        finally: await browser.close()
+            await page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(1)
+            
+            html = await page.content()
+            await browser.close()
+            soup = BeautifulSoup(html, "html.parser")
+            for s in soup(["script", "style", "nav", "footer", "header", "aside"]): s.decompose()
+            return " ".join(soup.get_text(separator=" ").split())[:4500]
+        except Exception as e:
+            await browser.close()
+            return f"Error: {str(e)}"
 
+# --- 4. ロジック関数 (プロンプトをより厳格に修正) ---
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("models/gemini-1.5-flash")
         
-        # --- モデルの動的解決（404エラー対策の決定版） ---
-        try:
-            # APIが現在サポートしている全てのモデル名を取得
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            # gemini-1.5-flashを最優先で探し、フルパス(models/...)で保持
-            model_name = next((m for m in available_models if "gemini-1.5-flash" in m), None)
-            if not model_name:
-                model_name = available_models[0] # なければ最初のモデルを使用
-        except Exception as list_err:
-            model_name = "models/gemini-1.5-flash" # リスト取得失敗時のフォールバック
-
-        model = genai.GenerativeModel(model_name)
         prompt = f"""
-        買取広告コンサルタントとして分析し、広告ランク最適化プランを作成せよ。
-        分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を含めること。
-        装飾記号 ** は禁止。
-        アセット（コールアウト・スニペット）も必ず含めよ。
-        サイト内容: {site_text}
+        あなたは買取広告コンサルタントです。以下のサイトを分析し、Google広告の「品質スコア」と「広告ランク」を最大化するプランを作成してください。
+
+        【分析対象】
+        {site_text}
+
+        【指示】
+        1. キーワードを見出し1に含め、LPとの整合性を高めること。
+        2. ユーザーの検索意図（早く売りたい、高く売りたい等）に合致する訴求を作成せよ。
+        3. [STATUS]判定：具体的数値や強力なベネフィットがあるなら「WIN」、一般的すぎる表現なら「LOSS」とせよ。
+
+        【構成】
+        最初にサイト解析（強み・課題・改善案）を書き、その後に必ず[DATA_START]と[DATA_END]で囲んでCSVデータを出力してください。
+        コードブロック(```)は使用禁止です。
+
+        [DATA_START]
+        Type,Content,Details,Other1,Other2,Status,Hint
+        見出し,サンプルテキスト,,,WIN,
+        説明文,サンプルテキスト,,,WIN,
+        キーワード,単語,マッチ,150円,高,WIN,
+        スニペット,種類,値,,,WIN,
+        コールアウト,テキスト,,,,WIN,
+        [DATA_END]
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"AI生成エラー: {str(e)}"
+    except Exception as e:
+        return f"AI生成エラー: {str(e)}"
+        
+# --- 結果表示部分のパース処理（より頑丈に） ---
+if st.session_state.ad_result:
+    res_text = st.session_state.ad_result
+    df_all = None
+
+    # [DATA_START] を探す。なければ「Type,Content」などの文字列を探す
+    start_tag = "[DATA_START]"
+    end_tag = "[DATA_END]"
+    
+    if start_tag in res_text and end_tag in res_text:
+        try:
+            raw_csv = res_text.split(start_tag)[1].split(end_tag)[0].strip()
+            # 余計なバッククォートやマークダウン記法を除去
+            raw_csv = re.sub(r'```.*?(\n|$)', '', raw_csv).strip()
+            df_all = pd.read_csv(io.StringIO(raw_csv))
+        except Exception as e:
+            st.warning(f"データの読み込みに失敗しました（形式エラー）。生データを確認してください。")
+
+def safe_table_display(df, type_name, col_mapping):
+    try:
+        if df is None or df.empty: return False
+        sub_df = df[df['Type'].astype(str).str.contains(type_name, na=False, case=False)].copy()
+        if sub_df.empty: return False
+        
+        # インデックスを1から始まる形にリセット
+        sub_df.index = range(1, len(sub_df) + 1)
+        
+        display_cols = []
+        for orig_col in col_mapping.keys():
+            if orig_col not in sub_df.columns: sub_df[orig_col] = ""
+            display_cols.append(orig_col)
+        
+        st.table(sub_df[display_cols].rename(columns=col_mapping))
+        return True
+    except: return False
 
 # --- 5. メインUI ---
-st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
-api_key = st.secrets.get("GEMINI_API_KEY")
+st.set_page_config(page_title="検索広告案 自動生成ツール", layout="wide")
 
 with st.sidebar:
-    st.title("Settings")
-    if st.text_input("Password", type="password") != "password": st.stop()
+    st.markdown("<h1 style='text-align: center; font-size: 50px;'>⚙️</h1>", unsafe_allow_html=True)
+    pwd = st.text_input("パスワード", type="password")
+    if pwd != "password":
+        if pwd != "": st.error("パスワードが違います")
+        st.stop()
 
-st.title("広告プラン自動生成ツール")
-url_in = st.text_input("LPのURLを入力")
+api_key = st.secrets.get("GEMINI_API_KEY")
+st.title("検索（リスティング）広告案 自動生成ツール")
 
-if st.button("生成スタート"):
+url_in = st.text_input("LPのURLを入力してください", placeholder="https://********.com")
+
+if st.button("分析＆生成スタート"):
     if url_in:
-        with st.spinner("🚀 AIが戦略を構築中..."):
+        with st.spinner("🚀 戦略構築中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
-            st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
-            st.balloons()
+            res = generate_ad_plan(cleaned, api_key)
+            if "ERROR_429" in res:
+                st.error("⚠️ API制限に達しました。時間を置いてからお試しください。")
+            else:
+                st.session_state.ad_result = res
+                st.balloons()
 
-# --- 6. 結果表示・ダウンロード ---
+# --- 結果表示（ここを差し替え） ---
 if st.session_state.ad_result:
-    res = st.session_state.ad_result
-    
-    # 解析文の抽出（[DATA_START]の前を確実に取得）
-    main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
-    
+    res_text = st.session_state.ad_result
     df_all = None
-    match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
+    
+    # 1. 解析テキストの抽出
+    main_text = res_text.split("[DATA_START]")[0].strip() if "[DATA_START]" in res_text else res_text
+
+    # 2. データのパース（正規表現で安全に抽出）
+    pattern = re.compile(r"\[DATA_START\](.*?)\[DATA_END\]", re.DOTALL | re.IGNORECASE)
+    match = pattern.search(res_text)
     if match:
-        csv_data = match.group(1).replace("```csv", "").replace("```", "").strip()
-        # カンマの数を正規化（AIの出力不備を補填）
-        lines = [line + ","*(6-line.count(",")) for line in csv_data.splitlines() if "," in line]
-        df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
-        df_all.columns = [c.strip() for c in df_all.columns]
+        try:
+            raw_csv = match.group(1).strip().replace("```csv", "").replace("```", "").strip()
+            df_all = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip')
+            df_all.columns = [c.strip() for c in df_all.columns]
+        except:
+            st.warning("一部のデータ形式が正しく読み込めませんでした。")
 
-    # Excel作成
+# 3. Excelファイルの作成（シート名を標準文字に変更して確実性を高める）
     try:
-        excel_io = io.BytesIO()
-        with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            # 1. サイト解析シート (ここを確実に1枚目にする)
-            analysis_text = clean_text(main_text)
-            df_analysis = pd.DataFrame([["サイト分析結果項目", "詳細内容"], ["分析全文", analysis_text]])
-            df_analysis.to_excel(writer, index=False, header=False, sheet_name="1_サイト解析")
-            # セルの幅を調整して読みやすくする
-            writer.sheets["1_サイト解析"].column_dimensions['B'].width = 100
-
-            if df_all is not None:
-                # 2. その他データ
-                sheet_map = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('スニペット|コールアウト|アセット','5_6_アセット')]
-                for t, sn in sheet_map:
-                    sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True)]
-                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
+        out = io.BytesIO()
+        # サイト分析のテキストを事前に処理
+        # HTMLタグを除去し、プレーンテキストにする
+        clean_analysis_text = main_text.replace("<br>", "\n").replace("<b>", "").replace("</b>", "").strip()
         
-        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_plan_full.xlsx")
-    except Exception as e: st.error(f"Excel出力エラー: {e}")
+        if not clean_analysis_text:
+            clean_analysis_text = "解析結果の取得に失敗しました。"
 
-    # タブ表示
-    t1, t2, t3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
-    
-    with t1:
-        st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
-    
-    with t2:
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            # --- 1. サイト解析シート (シート名から特殊文字 ① を除去) ---
+            df_analysis = pd.DataFrame([["分析結果全文", clean_analysis_text]], columns=["項目", "内容"])
+            df_analysis.to_excel(writer, index=False, sheet_name='1_サイト解析')
+            
+            # 列の幅を調整（見やすくするため）
+            ws_analysis = writer.sheets['1_サイト解析']
+            ws_analysis.column_dimensions['A'].width = 15
+            ws_analysis.column_dimensions['B'].width = 100
+
+            # --- 2. 広告文・キーワード・アセットシート ---
+            if df_all is not None:
+                # ② 広告文（見出し）
+                df_h = df_all[df_all['Type'].astype(str).str.contains('見出し', na=False, case=False)].copy()
+                if not df_h.empty:
+                    df_h.to_excel(writer, index=False, sheet_name='2_広告文案_見出し')
+                
+                # ③ 説明文
+                df_d = df_all[df_all['Type'].astype(str).str.contains('説明文', na=False, case=False)].copy()
+                if not df_d.empty:
+                    df_d.to_excel(writer, index=False, sheet_name='3_説明文案')
+                
+                # ④ キーワード
+                df_k = df_all[df_all['Type'].astype(str).str.contains('キーワード', na=False, case=False)].copy()
+                if not df_k.empty:
+                    df_k.to_excel(writer, index=False, sheet_name='4_キーワード')
+                
+                # ⑤⑥ アセット（スニペット・コールアウト）
+                df_a = df_all[df_all['Type'].astype(str).str.contains('スニペット|コールアウト', na=False, case=False)].copy()
+                if not df_a.empty:
+                    df_a.to_excel(writer, index=False, sheet_name='5_6_アセット')
+
+        # ダウンロードボタンの表示（mimeタイプを明示）
+        st.download_button(
+            label="📊 解析結果(Excel)をダウンロード",
+            data=out.getvalue(),
+            file_name="ad_strategy_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        # 万が一エラーが出た場合に原因を表示
+        st.error(f"Excel作成エラー: {e}")
+
+    # 4. タブ表示
+    tab1, tab2, tab3 = st.tabs(["📋 ① サイト解析", "✍️ ②③ 広告文案", "🔍 ④⑤⑥ アセット"])
+
+    with tab1:
+        st.markdown('<div class="report-box">', unsafe_allow_html=True)
+        st.markdown(apply_decoration(main_text), unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab2:
         if df_all is not None:
-            dynamic_ad_display(df_all, '見出し', "②広告文（見出し）")
+            dynamic_ad_display(df_all, '見出し', "②広告文案（見出し）")
             st.divider()
             dynamic_ad_display(df_all, '説明文', "③説明文案")
-    
-    with t3:
-        if df_all is not None:
-            safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチ','Other1':'推定CPC','Other2':'優先度'})
-            st.divider()
-            # フィルタ条件を広くしてアセットを表示
-            dynamic_ad_display(df_all, 'コールアウト|スニペット|アセット', "⑤⑥アセット（コールアウト・スニペット）")
+        else:
+            st.info("広告文データが生成されませんでした。")
 
-    with st.expander("🛠 生データ確認"):
-        st.code(res)
+    with tab3:
+        if df_all is not None:
+            st.markdown(apply_decoration("④キーワード"), unsafe_allow_html=True)
+            safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチタイプ','Other1':'推定CPC','Other2':'優先度'})
+            st.divider()
+            dynamic_ad_display(df_all, 'コールアウト', "⑥コールアウトアセット")
+
+    with st.expander("🛠 AIの生出力を確認"):
+        st.code(res_text)
+
+
+
+
