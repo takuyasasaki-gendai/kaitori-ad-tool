@@ -52,11 +52,11 @@ def apply_decoration(text):
 def dynamic_ad_display(df, type_keyword, label):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
     if df is None or df.empty:
-        st.info("データがありません。")
+        st.info(f"{label} のデータがありません。")
         return
     sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
     if sub_df.empty:
-        st.write(f"（{label} に該当する案がありませんでした。生データを確認してください。）")
+        st.write(f"（{label} に関する具体的な案がAIから出力されませんでした。）")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         cols = st.columns([0.1, 0.7, 0.2])
@@ -100,28 +100,35 @@ def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # --- モデル名を自動取得（404エラー対策） ---
+        # --- モデル自動選択 (Gemini 2.5 Flash 対応) ---
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 利用可能なFlashモデルを探す（models/ 接頭辞の有無を吸収）
+        # 候補：2.5 Flashを最優先に設定
+        candidates = []
+        candidates.extend([m for m in available_models if "gemini-2.5-flash" in m])
+        candidates.extend([m for m in available_models if "gemini-1.5-flash" in m])
+        candidates.append("gemini-2.5-flash") # 直接指定フォールバック
+        
         model_to_use = None
-        for m in available_models:
-            if "gemini-1.5-flash" in m:
-                model_to_use = m
+        for m_name in candidates:
+            try:
+                test_model = genai.GenerativeModel(m_name)
+                test_model.generate_content("test", generation_config={"max_output_tokens": 1})
+                model_to_use = test_model
                 break
+            except: continue
         
         if not model_to_use:
-            model_to_use = "gemini-1.5-flash" # フォールバック
+            return "利用可能なモデル（Gemini 2.5 Flash等）が見つかりません。APIキーの有効性を確認してください。"
 
-        model = genai.GenerativeModel(model_to_use)
         prompt = f"""
         買取広告コンサルタントとして分析し、広告ランク最適化プランを作成せよ。
-        分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を出力せよ。
-        内容: {site_text}
+        分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を含めること。
+        装飾記号 ** は禁止。サイト内容: {site_text}
         """
-        response = model.generate_content(prompt)
+        response = model_to_use.generate_content(prompt)
         return response.text
-    except Exception as e: return f"AIエラー: {str(e)}"
+    except Exception as e: return f"生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
@@ -136,12 +143,12 @@ url_in = st.text_input("LPのURLを入力")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 解析中..."):
+        with st.spinner("🚀 Gemini 2.5 が戦略を構築中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. 表示 & Excel出力 ---
+# --- 6. 結果表示・Excel出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -154,23 +161,21 @@ if st.session_state.ad_result:
         df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
         df_all.columns = [c.strip() for c in df_all.columns]
 
-    # Excel作成（1枚目のシートに解析文を確実に乗せる）
+    # Excel作成 (1シート目に解析文を確実に保存)
     try:
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            # 1. サイト解析シート
             pd.DataFrame([["サイト分析結果全文", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
-            writer.sheets["1_サイト解析"].column_dimensions['B'].width = 120
+            writer.sheets["1_サイト解析"].column_dimensions['B'].width = 110
             
             if df_all is not None:
-                # 2. 各データシート
-                sheet_maps = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('アセット|コールアウト|スニペット','5_6_アセット')]
-                for t, sn in sheet_maps:
+                sheet_map = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('アセット|コールアウト|スニペット','5_6_アセット')]
+                for t, sn in sheet_map:
                     sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True)]
                     if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
         
         st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
-    except Exception as e: st.error(f"Excel出力エラー: {e}")
+    except Exception as e: st.error(f"Excel出力失敗: {e}")
 
     # タブ表示
     t1, t2, t3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
