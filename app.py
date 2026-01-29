@@ -48,28 +48,27 @@ def apply_decoration(text):
     text = text.replace("\n", "<br>")
     return text
 
-def flexible_display(df, keywords, label, exclude_keywords=None):
+def flexible_display(df, filter_keywords, label, exclude_keywords=None):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
     if df is None or df.empty:
-        st.info("データがありません。")
+        st.info("データの生成待ちです。")
         return
     
     # TypeまたはContentに含まれるキーワードでフィルタ
-    mask = df['Type'].astype(str).str.contains(keywords, na=False, case=False, regex=True) | \
-           df['Content'].astype(str).str.contains(keywords, na=False, case=False, regex=True)
-    
+    mask = df.iloc[:, 0:3].apply(lambda row: row.astype(str).str.contains(filter_keywords, case=False, na=False).any(), axis=1)
     sub_df = df[mask].copy()
     
     if exclude_keywords:
-        sub_df = sub_df[~sub_df['Content'].astype(str).str.contains(exclude_keywords, na=False, case=False, regex=True)]
+        exclude_mask = sub_df.iloc[:, 0:3].apply(lambda row: row.astype(str).str.contains(exclude_keywords, case=False, na=False).any(), axis=1)
+        sub_df = sub_df[~exclude_mask]
 
     if sub_df.empty:
-        st.write("（具体的案が出力されませんでした。再生成をお試しください。）")
+        st.write("（具体的案が出力されませんでした。生成スタートをもう一度押してください。）")
         return
     
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
-        content = clean_text(row.get('Content'))
-        details = clean_text(row.get('Details'))
+        content = clean_text(row.iloc[1])
+        details = clean_text(row.iloc[2])
         cols = st.columns([0.1, 0.7, 0.2])
         cols[0].write(i)
         cols[1].write(content)
@@ -80,7 +79,7 @@ def flexible_display(df, keywords, label, exclude_keywords=None):
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. 生成ロジック（個数ノルマを徹底強化） ---
+# --- 4. 生成ロジック ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -102,17 +101,17 @@ def generate_ad_plan(site_text, api_key):
         model = genai.GenerativeModel("gemini-2.5-flash")
         
         prompt = f"""
-        あなたは日本最高峰の広告運用者です。提供されたLPを分析し、品質スコア10/10を獲得するプランを、以下のノルマに従って作成してください。
+        あなたは日本最高峰のGoogle広告運用者です。提供されたLPを分析し、以下のノルマを【絶対】に守ってプランを作成してください。
 
-        【重要：出力ノルマ】
+        【重要ノルマ】
         1. サイト分析（①強み ②課題 ③改善案）をそれぞれ5項目以上詳しく記述。
         2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
-        3. 以下の個数を「絶対に」守ってください。不足は許されません：
-           - 見出し(Type:見出し): 【15個以上】。「見出し1案」などの仮テキストは禁止。具体的なベネフィットを書くこと。
-           - 説明文(Type:説明文): 【4個以上】。
-           - キーワード(Type:キーワード): 【20個以上】。
-           - 構造化スニペット(Type:アセット): 【3種類以上】。内容に「スニペット」という言葉を含めてください。
-           - コールアウト(Type:アセット): 【8個以上】。内容に「コールアウト」という言葉を含めてください。
+        3. 下記個数を【必ず】出力してください。不足は許されません：
+           - 見出し: 【必ず15個】。具体的で魅力的な訴求を書くこと。
+           - 説明文: 【必ず4個】。
+           - キーワード: 【必ず20個】。
+           - 構造化スニペット: 【必ず3種類】。
+           - コールアウト: 【必ず8個】。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
@@ -120,7 +119,7 @@ def generate_ad_plan(site_text, api_key):
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"AI生成エラー: {str(e)}"
+    except Exception as e: return f"生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
@@ -135,12 +134,12 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 15個の見出し、20個のキーワードを生成中..."):
+        with st.spinner("🚀 戦略・広告文・キーワード(15個/20個)を生成中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. パース & 表示 ---
+# --- 6. 結果表示・パース ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -160,26 +159,19 @@ if st.session_state.ad_result:
         
         if lines:
             df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
-            df_all.columns = ["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]
 
     # Excel作成
     try:
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            pd.DataFrame([["解析結果", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
+            pd.DataFrame([["サイト分析結果", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
             if df_all is not None:
-                maps = [
-                    ('見出し|LP', '2_広告見出し'),
-                    ('説明文', '3_説明文'),
-                    ('キーワード', '4_キーワード'),
-                    ('スニペット', '5_構造化スニペット'),
-                    ('コールアウト', '6_コールアウト')
-                ]
-                for t, sn in maps:
-                    sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True) | 
-                                 df_all['Content'].astype(str).str.contains(t, na=False, case=False, regex=True)]
-                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
-        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
+                sheet_maps = [('見出し|LP', '2_広告見出し(15案)'), ('説明文', '3_説明文(4案)'), ('キーワード', '4_キーワード(20案)'), ('スニペット', '5_構造化スニペット'), ('コールアウト', '6_コールアウト')]
+                for t_key, s_name in sheet_maps:
+                    mask = df_all.iloc[:, 0:2].apply(lambda row: row.astype(str).str.contains(t_key, case=False, na=False).any(), axis=1)
+                    sub = df_all[mask]
+                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
+        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_plan_full.xlsx")
     except Exception as e: st.error(f"Excel作成エラー: {e}")
 
     # --- ①〜⑥の順番でタブを表示 ---
@@ -191,16 +183,17 @@ if st.session_state.ad_result:
         st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
     
     with tab2:
-        flexible_display(df_all, "見出し|LP", "② 広告文（見出し15個目標）")
+        flexible_display(df_all, "見出し|LP", "② 広告文（見出し15個）")
         
     with tab3:
-        flexible_display(df_all, "説明文", "③ 広告文（説明文4個目標）")
+        flexible_display(df_all, "説明文", "③ 広告文（説明文4個）")
         
     with tab4:
-        st.markdown(apply_decoration("④ キーワード戦略（20個目標）"), unsafe_allow_html=True)
+        st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
-            sub = df_all[df_all['Type'].astype(str).str.contains("キーワード", na=False)]
-            st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
+            mask = df_all.iloc[:, 0].astype(str).str.contains("キーワード", na=False)
+            sub = df_all[mask]
+            st.table(sub.iloc[:, [1, 2]].rename(columns={sub.columns[1]: "キーワード", sub.columns[2]: "詳細"}))
             
     with tab5:
         flexible_display(df_all, "スニペット", "⑤ 構造化スニペット")
