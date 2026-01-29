@@ -48,15 +48,23 @@ def apply_decoration(text):
     text = text.replace("\n", "<br>")
     return text
 
-def section_display(df, section_id, label):
+def flexible_display(df, keywords, label, exclude_keywords=None):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
     if df is None or df.empty:
         st.info("データの生成待ちです。")
         return
-    # Section IDでフィルタリング
-    sub_df = df[df['Section'].astype(str) == str(section_id)].copy()
+    
+    # TypeまたはContentに含まれるキーワードでフィルタ
+    mask = df['Type'].astype(str).str.contains(keywords, na=False, case=False, regex=True) | \
+           df['Content'].astype(str).str.contains(keywords, na=False, case=False, regex=True)
+    
+    sub_df = df[mask].copy()
+    
+    if exclude_keywords:
+        sub_df = sub_df[~sub_df['Content'].astype(str).str.contains(exclude_keywords, na=False, case=False, regex=True)]
+
     if sub_df.empty:
-        st.write("（このセクションの具体的案が出力されませんでした。再生成をお試しください。）")
+        st.write("（具体的案が出力されませんでした。再生成をお試しください。）")
         return
     
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
@@ -72,7 +80,7 @@ def section_display(df, section_id, label):
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. 生成ロジック（個数と実戦的コピーを強制） ---
+# --- 4. 生成ロジック ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -91,27 +99,21 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        # 利用可能な最新モデルを選択
-        model = genai.GenerativeModel("gemini-1.5-flash") # 安定版を使用
+        model = genai.GenerativeModel("gemini-1.5-flash")
         
         prompt = f"""
-        あなたは日本最高峰のGoogle広告運用コンサルタントです。提供されたLPを分析し、品質スコア10/10を獲得するための究極の広告プランを作成してください。
+        あなたは日本最高峰の広告運用者です。以下のLPを分析し、品質スコア10/10を獲得するプランを作成してください。
 
-        【重要：出力ノルマとルール】
-        1. 最初に詳細なサイト解析（①強み ②課題 ③改善案）を記述してください。
-        2. 次に必ず [DATA_START] と [DATA_END] で囲んで以下の4列CSVデータを出力してください。
-        3. CSVのカラムは (Section, Type, Content, Details) です。
-        4. 各セクションの個数を必ず守ってください：
-           - Section 2 (見出し): 必ず15個。具体的で魅力的な訴求を書くこと（「見出し1案」などは禁止）。
-           - Section 3 (説明文): 必ず4個。LPの強みを盛り込み、90文字ギリギリまで使うこと。
-           - Section 4 (キーワード): 必ず20個。
-           - Section 5 (構造化スニペット): 必ず3種類以上。
-           - Section 6 (コールアウト): 必ず8個以上。
-
-        【CSVフォーマット例】
-        Section,Type,Content,Details
-        2,見出し,ロレックス買取実績地域No1,54年の歴史がある質屋の信頼
-        ...
+        【重要：出力ノルマ】
+        1. サイト分析（①強み ②課題 ③改善案）を詳しく記述。
+        2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
+        3. 下記の個数を絶対に守ってください（手抜き厳禁）：
+           - 見出し(Type:見出し): 必ず15個以上。
+           - 説明文(Type:説明文): 必ず4個以上（90文字ギリギリ）。
+           - キーワード(Type:キーワード): 必ず20個以上。
+           - アセット(Type:アセット): スニペット、コールアウト、サイトリンクを各5個以上。
+        
+        CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
         LP内容: {site_text}
         """
@@ -132,12 +134,12 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 戦略・広告文・キーワードを抽出中..."):
+        with st.spinner("🚀 圧倒的ボリュームで戦略を構築中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. 結果表示・ダウンロード ---
+# --- 6. 結果表示・パース ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -148,36 +150,16 @@ if st.session_state.ad_result:
         csv_raw = match.group(1).strip()
         csv_raw = re.sub(r"```[a-z]*", "", csv_raw).replace("```", "").strip()
         
-        # 4列に整形
-        valid_lines = []
+        lines = []
         for line in csv_raw.splitlines():
             if "," in line:
                 cols = line.split(",")
-                while len(cols) < 4: cols.append("")
-                valid_lines.append(",".join(cols[:4]))
+                while len(cols) < 7: cols.append("")
+                lines.append(",".join(cols[:7]))
         
-        if valid_lines:
-            df_all = pd.read_csv(io.StringIO("\n".join(valid_lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
-            df_all.columns = ["Section", "Type", "Content", "Details"]
-
-    # Excel作成
-    try:
-        excel_io = io.BytesIO()
-        with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            pd.DataFrame([["サイト分析結果", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
-            if df_all is not None:
-                sheet_names = {
-                    "2": "2_広告見出し(15案)",
-                    "3": "3_説明文(4案)",
-                    "4": "4_キーワード(20案)",
-                    "5": "5_構造化スニペット",
-                    "6": "6_コールアウト"
-                }
-                for s_id, s_name in sheet_names.items():
-                    sub = df_all[df_all['Section'].astype(str) == s_id]
-                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
-        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_plan_full.xlsx")
-    except Exception as e: st.error(f"Excel作成エラー: {e}")
+        if lines:
+            df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
+            df_all.columns = ["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]
 
     # --- ①〜⑥の順番でタブを表示 ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -188,22 +170,22 @@ if st.session_state.ad_result:
         st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
     
     with tab2:
-        section_display(df_all, "2", "② 広告文（見出し15個）")
+        flexible_display(df_all, "見出し|LP", "② 広告文（見出し15個）")
         
     with tab3:
-        section_display(df_all, "3", "③ 広告文（説明文4個）")
+        flexible_display(df_all, "説明文", "③ 広告文（説明文4個）")
         
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
-            sub = df_all[df_all['Section'].astype(str) == "4"]
+            sub = df_all[df_all['Type'].astype(str).str.contains("キーワード", na=False)]
             st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
             
     with tab5:
-        section_display(df_all, "5", "⑤ 構造化スニペット")
+        flexible_display(df_all, "アセット", "⑤ 構造化スニペット", exclude_keywords="コールアウト")
         
     with tab6:
-        section_display(df_all, "6", "⑥ コールアウトアセット")
+        flexible_display(df_all, "コールアウト", "⑥ コールアウトアセット")
 
-    with st.expander("🛠 生データ（デバッグ用）"):
+    with st.expander("🛠 デバッグ（生データ）"):
         st.code(res)
