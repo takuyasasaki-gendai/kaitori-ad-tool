@@ -23,7 +23,7 @@ if sys.platform == 'win32':
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
 
-# --- 2. CSSデザイン (ゴールド & ダーク) ---
+# --- 2. CSSデザイン ---
 st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
@@ -39,8 +39,8 @@ st.markdown("""
 
 # --- 3. 補助関数 ---
 def clean_text(text):
-    """不要な装飾記号を完全に除去"""
     if not text: return ""
+    # 太字(**)やコードブロックを完全に除去
     return str(text).replace("**", "").replace("###", "").replace("`", "").strip()
 
 def apply_decoration(text):
@@ -55,10 +55,10 @@ def dynamic_ad_display(df, type_keyword, label):
     if df is None or df.empty:
         st.info("データがありません。")
         return
-    # フィルタ条件を広くして表示漏れを物理的に防ぐ
+    # フィルタ条件を広くしてAIの表記揺れ（「アセット案」等）を救済
     sub_df = df[df['Type'].astype(str).str.contains(type_keyword, na=False, case=False, regex=True)].copy()
     if sub_df.empty:
-        st.write(f"（{label} に関する案がAIから出力されませんでした。生データを確認してください。）")
+        st.write(f"（{label} に関する具体的な案がAIから出力されませんでした。生データを確認してください。）")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         cols = st.columns([0.1, 0.7, 0.2])
@@ -101,38 +101,16 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        
-        # --- 404エラーを物理的に回避する接続リトライロジック ---
-        # 可能性のあるモデル名候補
-        candidates = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-1.5-flash-latest"]
-        model = None
-        error_logs = []
-
-        for m_name in candidates:
-            try:
-                test_model = genai.GenerativeModel(m_name)
-                # 疎通テスト
-                test_model.generate_content("Hello", generation_config={"max_output_tokens": 1})
-                model = test_model
-                break
-            except Exception as e:
-                error_logs.append(f"{m_name}: {str(e)}")
-
-        if model is None:
-            return f"AIモデル接続エラー。以下のすべてのモデル名を試しましたが失敗しました:\n" + "\n".join(error_logs)
-
+        # 新しいキーに合わせて最新のエイリアスを指定
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
         prompt = f"""
-        買取広告コンサルタントとして、以下のサイトを分析し広告プランを作成してください。
-        
-        【重要】
-        最初にサイト解析（①強み ②課題 ③改善案）を詳しく書き、その後に必ず [DATA_START] カンマ区切りのCSVデータ(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を出力してください。
-        アセット（コールアウト・スニペット）の案も必ず含めること。
-        
-        内容: {site_text}
+        買取広告コンサルタントとして分析し、広告ランク最適化プランを作成せよ。
+        分析後に必ず [DATA_START] カンマ区切りのCSV形式(Type,Content,Details,Other1,Other2,Status,Hint) [DATA_END] を含めること。
+        装飾記号 ** は禁止。サイト内容: {site_text}
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"生成エラー: {str(e)}"
+    except Exception as e: return f"AI生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
@@ -155,15 +133,12 @@ if st.button("生成スタート"):
 # --- 6. 結果表示・ダウンロード ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
-    
-    # 解析文の抽出（[DATA_START]の前を確実に取得）
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     
     df_all = None
     match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
     if match:
         csv_data = match.group(1).replace("```csv", "").replace("```", "").strip()
-        # AIがカンマをサボった場合の補填ロジック
         lines = [line + ","*(6-line.count(",")) for line in csv_data.splitlines() if "," in line]
         df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
         df_all.columns = [c.strip() for c in df_all.columns]
@@ -172,32 +147,33 @@ if st.session_state.ad_result:
     try:
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-            # 1. サイト解析シート（表形式ではなく直接テキストを配置）
+            # 1. サイト解析シート
             clean_analysis = clean_text(main_text)
-            pd.DataFrame([["解析項目", "内容"], ["サイト分析結果全文", clean_analysis]]).to_excel(writer, index=False, header=False, sheet_name="1_サイト解析")
-            # 2. その他データ
+            pd.DataFrame([["サイト分析結果全文", clean_analysis]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
+            writer.sheets["1_サイト解析"].column_dimensions['B'].width = 120
+            
             if df_all is not None:
-                sheet_maps = [('見出し','2_広告文見出し'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('アセット|コールアウト|スニペット','5_6_アセット')]
-                for t, sn in sheet_maps:
+                # 2. その他データ
+                sheet_map = [('見出し','2_見出し案'),('説明文','3_説明文案'),('キーワード','4_キーワード'),('アセット|コールアウト|スニペット','5_6_アセット')]
+                for t, sn in sheet_map:
                     sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True)]
                     if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
         
-        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
+        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_plan_full.xlsx")
     except Exception as e: st.error(f"Excel出力エラー: {e}")
 
-    # タブ表示
-    t1, t2, t3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
-    with t1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
-    with t2:
+    tab1, tab2, tab3 = st.tabs(["📋 ① 解析", "✍️ ②③ 広告文", "🔍 ④⑤⑥ アセット"])
+    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
+    with tab2:
         if df_all is not None:
             dynamic_ad_display(df_all, '見出し', "②広告文（見出し）")
             st.divider()
             dynamic_ad_display(df_all, '説明文', "③説明文案")
-    with t3:
+    with tab3:
         if df_all is not None:
             safe_table_display(df_all, 'キーワード', {'Content':'キーワード','Details':'マッチ','Other1':'推定CPC','Other2':'優先度'})
             st.divider()
-            # フィルタ条件を広くしてアセットを表示
+            # 検索ワードを広げて表示漏れを防ぐ
             dynamic_ad_display(df_all, 'コールアウト|スニペット|アセット', "⑤⑥アセット（コールアウト・スニペット）")
 
     with st.expander("🛠 生データ確認"): st.code(res)
