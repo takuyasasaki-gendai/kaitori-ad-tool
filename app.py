@@ -51,7 +51,7 @@ def apply_decoration(text):
 def flexible_display(df, keywords, label, exclude_keywords=None):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
     if df is None or df.empty:
-        st.info("データの生成待ちです。")
+        st.info("データがありません。")
         return
     
     # TypeまたはContentに含まれるキーワードでフィルタ
@@ -80,7 +80,7 @@ def flexible_display(df, keywords, label, exclude_keywords=None):
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. 生成ロジック ---
+# --- 4. 生成ロジック（個数ノルマを徹底強化） ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -99,19 +99,20 @@ async def fetch_and_clean_content(url):
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         
         prompt = f"""
-        あなたは日本最高峰の広告運用者です。以下のLPを分析し、品質スコア10/10を獲得するプランを作成してください。
+        あなたは日本最高峰の広告運用者です。提供されたLPを分析し、品質スコア10/10を獲得するプランを、以下のノルマに従って作成してください。
 
         【重要：出力ノルマ】
-        1. サイト分析（①強み ②課題 ③改善案）を詳しく記述。
+        1. サイト分析（①強み ②課題 ③改善案）をそれぞれ5項目以上詳しく記述。
         2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
-        3. 下記の個数を絶対に守ってください（手抜き厳禁）：
-           - 見出し(Type:見出し): 必ず15個以上。
-           - 説明文(Type:説明文): 必ず4個以上（90文字ギリギリ）。
-           - キーワード(Type:キーワード): 必ず20個以上。
-           - アセット(Type:アセット): スニペット、コールアウト、サイトリンクを各5個以上。
+        3. 以下の個数を「絶対に」守ってください。不足は許されません：
+           - 見出し(Type:見出し): 【15個以上】。「見出し1案」などの仮テキストは禁止。具体的なベネフィットを書くこと。
+           - 説明文(Type:説明文): 【4個以上】。
+           - キーワード(Type:キーワード): 【20個以上】。
+           - 構造化スニペット(Type:アセット): 【3種類以上】。内容に「スニペット」という言葉を含めてください。
+           - コールアウト(Type:アセット): 【8個以上】。内容に「コールアウト」という言葉を含めてください。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
@@ -119,7 +120,7 @@ def generate_ad_plan(site_text, api_key):
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"生成エラー: {str(e)}"
+    except Exception as e: return f"AI生成エラー: {str(e)}"
 
 # --- 5. メインUI ---
 st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
@@ -134,12 +135,12 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 圧倒的ボリュームで戦略を構築中..."):
+        with st.spinner("🚀 15個の見出し、20個のキーワードを生成中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. 結果表示・パース ---
+# --- 6. パース & 表示 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -161,6 +162,26 @@ if st.session_state.ad_result:
             df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
             df_all.columns = ["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]
 
+    # Excel作成
+    try:
+        excel_io = io.BytesIO()
+        with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
+            pd.DataFrame([["解析結果", clean_text(main_text)]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_サイト解析")
+            if df_all is not None:
+                maps = [
+                    ('見出し|LP', '2_広告見出し'),
+                    ('説明文', '3_説明文'),
+                    ('キーワード', '4_キーワード'),
+                    ('スニペット', '5_構造化スニペット'),
+                    ('コールアウト', '6_コールアウト')
+                ]
+                for t, sn in maps:
+                    sub = df_all[df_all['Type'].astype(str).str.contains(t, na=False, case=False, regex=True) | 
+                                 df_all['Content'].astype(str).str.contains(t, na=False, case=False, regex=True)]
+                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=sn)
+        st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
+    except Exception as e: st.error(f"Excel作成エラー: {e}")
+
     # --- ①〜⑥の順番でタブを表示 ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"
@@ -170,19 +191,19 @@ if st.session_state.ad_result:
         st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
     
     with tab2:
-        flexible_display(df_all, "見出し|LP", "② 広告文（見出し15個）")
+        flexible_display(df_all, "見出し|LP", "② 広告文（見出し15個目標）")
         
     with tab3:
-        flexible_display(df_all, "説明文", "③ 広告文（説明文4個）")
+        flexible_display(df_all, "説明文", "③ 広告文（説明文4個目標）")
         
     with tab4:
-        st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
+        st.markdown(apply_decoration("④ キーワード戦略（20個目標）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("キーワード", na=False)]
             st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
             
     with tab5:
-        flexible_display(df_all, "アセット", "⑤ 構造化スニペット", exclude_keywords="コールアウト")
+        flexible_display(df_all, "スニペット", "⑤ 構造化スニペット")
         
     with tab6:
         flexible_display(df_all, "コールアウト", "⑥ コールアウトアセット")
