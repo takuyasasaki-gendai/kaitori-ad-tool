@@ -54,7 +54,9 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         st.info("データの解析準備ができていません。")
         return
     
-    mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
+    # TypeまたはContentに含まれるキーワードでフィルタ
+    mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True) | \
+           df['Content'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
     
     if exclude_keywords:
@@ -78,7 +80,7 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. 生成ロジック ---
+# --- 4. スクレイピング & 生成 ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -100,17 +102,17 @@ def generate_ad_plan(site_text, api_key):
         model = genai.GenerativeModel("gemini-2.5-flash")
         
         prompt = f"""
-        あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを【絶対】に守ってプランを作成してください。
+        あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを遵守してプランを作成してください。
 
         【重要：出力ノルマ】
-        1. サイト分析（①強み ②課題 ③改善案）を詳しく記述。
+        1. サイト分析（①強み ②課題 ③改善案）を記述。
         2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
-        3. 下記個数を【必ず】出力してください：
-           - 見出し: 【必ず15個】。Typeは 'Headline' にしてください。
-           - 説明文: 【必ず4個】。Typeは 'Description' にしてください。
-           - キーワード: 【必ず20個】。Typeは 'Keyword' にしてください。
-           - 構造化スニペット: 【必ず3種以上】。Typeは 'Snippet' にしてください。
-           - コールアウト: 【必ず8個以上】。Typeは 'Callout' にしてください。
+        3. 下記個数を死守してください：
+           - Headline (見出し): 15個。
+           - Description (説明文): 4個。
+           - Keyword (キーワード): 20個。
+           - Snippet (構造化スニペット): 3種類以上。**スニペットの項目はカンマではなく / で区切ってください**。
+           - Callout (コールアウト): 8個以上。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
@@ -133,7 +135,7 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 戦略レポートと広告文(15案/20キーワード)を構築中..."):
+        with st.spinner("🚀 解析中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
@@ -148,56 +150,49 @@ if st.session_state.ad_result:
     if match:
         csv_raw = match.group(1).strip()
         csv_raw = re.sub(r"```[a-z]*", "", csv_raw).replace("```", "").strip()
-        lines = [line + ","*(6-line.count(",")) for line in csv_raw.splitlines() if "," in line]
-        if lines:
-            df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
-            df_all.columns = ["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]
+        
+        parsed_data = []
+        for line in csv_raw.splitlines():
+            if "," in line:
+                cols = line.split(",")
+                # --- カンマ多すぎ問題を解消するロジック ---
+                if len(cols) > 7:
+                    # Type, Content, あとは全部 Details にまとめて結合
+                    fixed_row = [cols[0], cols[1], " / ".join(cols[2:]), "", "", "", ""]
+                    parsed_data.append(fixed_row[:7])
+                else:
+                    while len(cols) < 7: cols.append("")
+                    parsed_data.append(cols[:7])
+        
+        if parsed_data:
+            df_all = pd.DataFrame(parsed_data, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
 
-    # --- Excelボタンの復活とシート作成 ---
+    # --- Excelダウンロード ---
     if df_all is not None:
         try:
             excel_io = io.BytesIO()
             with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-                # 1. 解析
-                pd.DataFrame([["① サイト解析", main_text]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_解析結果")
-                
-                # 2-6 各セクションのシート
-                maps = [
-                    ("Headline|見出し", "2_見出し(15案)"),
-                    ("Description|説明文", "3_説明文(4案)"),
-                    ("Keyword|キーワード", "4_キーワード(20案)"),
-                    ("Snippet|スニペット", "5_構造化スニペット"),
-                    ("Callout|コールアウト", "6_コールアウト")
-                ]
+                pd.DataFrame([["① 解析結果", main_text]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_解析")
+                maps = [("Headline|見出し", "2_見出し(15案)"), ("Description|説明文", "3_説明文(4案)"), ("Keyword|キーワード", "4_キーワード(20案)"), ("Snippet|スニペット", "5_構造化スニペット"), ("Callout|コールアウト", "6_コールアウト")]
                 for k, s_name in maps:
-                    sub = df_all[df_all['Type'].astype(str).str.contains(k, case=False, na=False, regex=True)]
+                    sub = df_all[df_all['Type'].astype(str).str.contains(k, case=False, na=False, regex=True) | 
+                                 df_all['Content'].astype(str).str.contains(k, case=False, na=False, regex=True)]
                     if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
-            
-            st.download_button("📊 完璧な広告プラン(Excel)をダウンロード", excel_io.getvalue(), "ad_strategy_report.xlsx")
-        except Exception as e:
-            st.error(f"Excel作成中にエラーが発生しました: {e}")
+            st.download_button("📊 Excelダウンロード", excel_io.getvalue(), "ad_report.xlsx")
+        except: pass
 
     # --- タブ表示 ---
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"
-    ])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
     
-    with tab1:
-        st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
-    with tab2:
-        flexible_display(df_all, "Headline|見出し|LP", "② 広告文（見出し15個）")
-    with tab3:
-        flexible_display(df_all, "Description|説明文", "③ 広告文（説明文4個）")
+    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
+    with tab2: flexible_display(df_all, "Headline|見出し|LP", "② 広告文（見出し15個）")
+    with tab3: flexible_display(df_all, "Description|説明文", "③ 広告文（説明文4個）")
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
-            mask = df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)
-            sub = df_all[mask]
+            sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)]
             st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
-    with tab5:
-        flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
-    with tab6:
-        flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
+    with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
+    with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
 
-    with st.expander("🛠 デバッグ（生データ）"):
-        st.code(res)
+    with st.expander("🛠 デバッグ（生データ）"): st.code(res)
