@@ -29,7 +29,7 @@ st.markdown("""
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
     
-    /* ポップオーバー（詳細ボタン）のラベル文字の視認性 */
+    /* ポップオーバー（詳細ボタン）のラベル文字の視認性向上 */
     div[data-testid="stPopover"] button p {
         color: #000000 !important;
     }
@@ -66,15 +66,19 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
     if df is None or df.empty:
         st.info("データの解析準備ができていません。")
         return
+    
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True) | \
            df['Content'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
+    
     if exclude_keywords:
         exclude_mask = sub_df['Type'].astype(str).str.contains(exclude_keywords, case=False, na=False, regex=True)
         sub_df = sub_df[~exclude_mask]
+
     if sub_df.empty:
-        st.write("（具体的案が出力されませんでした。）")
+        st.write("（このセクションの具体的案がAIから出力されませんでした。）")
         return
+    
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         content = clean_text(row.get('Content'))
         details = clean_text(row.get('Details'))
@@ -88,7 +92,7 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. スクレイピング & 生成 ---
+# --- 4. スクレイピング & 生成ロジック ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -108,6 +112,7 @@ def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
+        
         prompt = f"""
         あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを遵守してプランを作成してください。
 
@@ -115,20 +120,21 @@ def generate_ad_plan(site_text, api_key):
         1. サイト分析（①強み ②課題 ③改善案）のみを記述。
         2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
         
-        【キーワード戦略(④)の厳格な指定】
-        - キーワードは20個以上出力。Typeは 'Keyword'。
-        - Contentカラム: キーワード本体。
-        - Detailsカラム: 必ず '部分一致', 'フレーズ一致', '完全一致' のいずれか1つのみを記入。
-        - Other1カラム: そのキーワードとマッチタイプを選んだ具体的な「入札戦略・理由」を記入。
+        【重要：キーワード(④)の指定】
+        - キーワードは必ず20個以上出力してください。
+        - Typeは 'Keyword' にしてください。
+        - Detailsには「部分一致」「フレーズ一致」「完全一致」のいずれかを必ず記載してください。
+        - Other1には、なぜそのマッチタイプなのか（例：広範囲のリーチ、指名検索の守り、競合へのぶつけ等）戦略的理由を書いてください。
         
-        【個数ノルマ】
-        - Headline: 15個。Type: 'Headline'。
-        - Description: 4個。Type: 'Description'。
-        - Snippet: 3種類。Type: 'Snippet'。
-        - Callout: 8個。Type: 'Callout'。
+        【その他個数ノルマ】
+        - Headline (見出し): 15個。
+        - Description (説明文): 4個。
+        - Snippet (構造化スニペット): 3種類以上。
+        - Callout (コールアウト): 8個以上。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
-        サイト内容: {site_text}
+
+        LP内容: {site_text}
         """
         response = model.generate_content(prompt)
         return response.text
@@ -147,7 +153,7 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 戦略構築中..."):
+        with st.spinner("🚀 解析中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
@@ -155,9 +161,13 @@ if st.button("生成スタート"):
 # --- 6. 結果表示・パース ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
+    
+    # --- 解析文のクレンジング (①から開始し、CSV直前で切る) ---
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     if "①" in analysis_raw:
         analysis_raw = analysis_raw[analysis_raw.find("①"):]
+    
+    # リストの 2. と干渉しないように、区切り線や大きな見出しだけを削除
     cleaned_analysis = re.split(r'\n\s*(-{3,}|#{1,4}\s*[23]\.)', analysis_raw)[0].strip()
     
     df_all = None
@@ -165,21 +175,23 @@ if st.session_state.ad_result:
     if match_csv:
         csv_raw = match_csv.group(1).strip()
         csv_raw = re.sub(r"```[a-z]*", "", csv_raw).replace("```", "").strip()
-        lines = []
+        
+        parsed_data = []
         for line in csv_raw.splitlines():
             if "," in line:
                 cols = line.split(",")
                 if len(cols) > 7:
-                    fixed_row = [cols[0], cols[1], cols[2], " / ".join(cols[3:]), "", "", ""]
-                    lines.append(",".join(fixed_row[:7]))
+                    # スニペット等のカンマ多すぎ対策
+                    fixed_row = [cols[0], cols[1], " / ".join(cols[2:]), "", "", "", ""]
+                    parsed_data.append(fixed_row[:7])
                 else:
                     while len(cols) < 7: cols.append("")
-                    lines.append(",".join(cols[:7]))
-        if lines:
-            df_all = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python').applymap(clean_text)
-            df_all.columns = ["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]
+                    parsed_data.append(cols[:7])
+        
+        if parsed_data:
+            df_all = pd.DataFrame(parsed_data, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
 
-    # Excelダウンロード
+    # --- Excelダウンロード ---
     if df_all is not None:
         try:
             excel_io = io.BytesIO()
@@ -195,19 +207,26 @@ if st.session_state.ad_result:
             st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_report.xlsx")
         except: pass
 
-    # タブ表示
+    # --- タブ表示 ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
-    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
+    
+    with tab1: 
+        st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
     with tab2: flexible_display(df_all, "Headline|見出し|LP", "② 広告文（見出し15個）")
     with tab3: flexible_display(df_all, "Description|説明文", "③ 広告文（説明文4個）")
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個・マッチタイプ別）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
+            # 番号を 1 からリセット
             sub.index = range(1, len(sub) + 1)
-            # カラム名をマッチタイプ戦略に合わせて表示
+            # カラム名をマッチタイプ戦略に合わせて変更
             st.table(sub[["Content", "Details", "Other1"]].rename(columns={
-                "Content": "キーワード", "Details": "マッチタイプ", "Other1": "入札戦略・理由"
+                "Content": "キーワード", 
+                "Details": "マッチタイプ",
+                "Other1": "入札戦略・理由"
             }))
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
+
+    with st.expander("🛠 デバッグ（生データ）"): st.code(res)
