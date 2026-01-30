@@ -28,12 +28,19 @@ st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
-    /* 詳細ボタン(Popover)内の文字を黒に指定 */
+    
+    /* ポップオーバー（詳細ボタン）のラベル文字の視認性向上 */
+    div[data-testid="stPopover"] button p {
+        color: #000000 !important;
+    }
+    
+    /* ポップオーバーの中身も黒に指定 */
     div[data-testid="stPopoverBody"] p, 
     div[data-testid="stPopoverBody"] span, 
     div[data-testid="stPopoverBody"] div { 
         color: #000000 !important; 
     }
+    
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
     .stDownloadButton>button { width: 100%; border-radius: 5px; height: 3.5em; background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold; }
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #D4AF37; color: white !important; border: none; font-weight: bold; }
@@ -81,12 +88,11 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         if details:
             with cols[2]:
                 with st.popover("💡 詳細"):
-                    # ここで出力される文字はCSSにより黒くなります
                     st.write(details)
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. スクレイピング & 生成 ---
+# --- 4. 生成ロジック ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -109,17 +115,17 @@ def generate_ad_plan(site_text, api_key):
         
         prompt = f"""
         あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを遵守してプランを作成してください。
-        [DATA_START] より前には分析結果のみを記述し、[DATA_START] 以降はCSVデータのみを出力してください。
 
-        【重要：出力ノルマ】
-        1. サイト分析（①強み ②課題 ③改善案）を記述。
-        2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
-        3. 下記個数を死守してください：
-           - Headline (見出し): 15個。
-           - Description (説明文): 4個。
-           - Keyword (キーワード): 20個。
-           - Snippet (構造化スニペット): 3種類以上。項目は / で区切ること。
-           - Callout (コールアウト): 8個以上。
+        【出力構成】
+        1. サイト分析（①強み ②課題 ③改善案）のみを記述。
+        2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
+        
+        【個数ノルマ】
+        - Headline (見出し): 15個。
+        - Description (説明文): 4個。
+        - Keyword (キーワード): 20個。
+        - Snippet (構造化スニペット): 3種類以上。
+        - Callout (コールアウト): 8個以上。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
@@ -147,24 +153,24 @@ if st.button("生成スタート"):
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. 結果表示・パース・Excel出力 ---
+# --- 6. 結果表示・パース ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     
-    # --- 解析文のクレンジング (冒頭の挨拶と末尾ヘッダーを除去) ---
-    main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
+    # --- 解析文のクレンジング (①強みから開始) ---
+    analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     
-    # ①より前の文章を削除
-    if "①" in main_text:
-        main_text = main_text[main_text.find("①"):]
+    # 前口上を削除
+    if "①" in analysis_raw:
+        analysis_raw = analysis_raw[analysis_raw.find("①"):]
     
-    # [DATA_START]直前の「2. Google広告出力データ」などのヘッダーを削除
-    main_text = re.sub(r"---?\s*###?\s*2\..*$", "", main_text, flags=re.MULTILINE | re.DOTALL).strip()
+    # 末尾の不要なヘッダーや区切り線を削除
+    cleaned_analysis = re.split(r'---|\n#+ \d\.|2\..*?\n', analysis_raw)[0].strip()
     
     df_all = None
-    match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
-    if match:
-        csv_raw = match.group(1).strip()
+    match_csv = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
+    if match_csv:
+        csv_raw = match_csv.group(1).strip()
         csv_raw = re.sub(r"```[a-z]*", "", csv_raw).replace("```", "").strip()
         
         parsed_data = []
@@ -186,25 +192,30 @@ if st.session_state.ad_result:
         try:
             excel_io = io.BytesIO()
             with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
-                pd.DataFrame([["① 解析結果", main_text]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_解析")
+                pd.DataFrame([["① 解析結果", cleaned_analysis]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_解析")
                 maps = [("Headline|見出し", "2_見出し(15案)"), ("Description|説明文", "3_説明文(4案)"), ("Keyword|キーワード", "4_キーワード(20案)"), ("Snippet|スニペット", "5_構造化スニペット"), ("Callout|コールアウト", "6_コールアウト")]
                 for k, s_name in maps:
-                    sub = df_all[df_all['Type'].astype(str).str.contains(k, case=False, na=False, regex=True) | 
-                                 df_all['Content'].astype(str).str.contains(k, case=False, na=False, regex=True)]
-                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
+                    sub_ex = df_all[df_all['Type'].astype(str).str.contains(k, case=False, na=False, regex=True) | 
+                                    df_all['Content'].astype(str).str.contains(k, case=False, na=False, regex=True)].copy()
+                    if not sub_ex.empty:
+                        sub_ex.index = range(1, len(sub_ex) + 1)
+                        sub_ex.to_excel(writer, index=True, index_label="No", sheet_name=s_name)
             st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_report.xlsx")
         except: pass
 
     # --- タブ表示 ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
     
-    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(main_text)}</div>', unsafe_allow_html=True)
+    with tab1: 
+        st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
     with tab2: flexible_display(df_all, "Headline|見出し|LP", "② 広告文（見出し15個）")
     with tab3: flexible_display(df_all, "Description|説明文", "③ 広告文（説明文4個）")
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
-            sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)]
+            sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
+            # 番号を 1 からにリセット
+            sub.index = range(1, len(sub) + 1)
             st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
