@@ -28,19 +28,12 @@ st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
-    
-    /* ポップオーバー（詳細ボタン）のラベル文字を常に黒に固定 */
-    div[data-testid="stPopover"] button p {
-        color: #000000 !important;
-    }
-    
-    /* ポップオーバーの中身（詳細テキスト）も黒に指定 */
+    /* 詳細ボタン(Popover)内の文字を黒に指定 */
     div[data-testid="stPopoverBody"] p, 
     div[data-testid="stPopoverBody"] span, 
     div[data-testid="stPopoverBody"] div { 
         color: #000000 !important; 
     }
-    
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
     .stDownloadButton>button { width: 100%; border-radius: 5px; height: 3.5em; background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold; }
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #D4AF37; color: white !important; border: none; font-weight: bold; }
@@ -88,11 +81,12 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         if details:
             with cols[2]:
                 with st.popover("💡 詳細"):
+                    # ここで出力される文字はCSSにより黒くなります
                     st.write(details)
         else:
             cols[2].write("✅ WIN")
 
-# --- 4. 生成ロジック ---
+# --- 4. スクレイピング & 生成 ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -115,17 +109,17 @@ def generate_ad_plan(site_text, api_key):
         
         prompt = f"""
         あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを遵守してプランを作成してください。
+        [DATA_START] より前には分析結果のみを記述し、[DATA_START] 以降はCSVデータのみを出力してください。
 
-        【出力構成】
-        1. サイト分析（①強み ②課題 ③改善案）のみを記述。
-        2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
-        
-        【個数ノルマ】
-        - Headline (見出し): 15個。
-        - Description (説明文): 4個。
-        - Keyword (キーワード): 20個。
-        - Snippet (構造化スニペット): 3種類以上。
-        - Callout (コールアウト): 8個以上。
+        【重要：出力ノルマ】
+        1. サイト分析（①強み ②課題 ③改善案）を記述。
+        2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
+        3. 下記個数を死守してください：
+           - Headline (見出し): 15個。
+           - Description (説明文): 4個。
+           - Keyword (キーワード): 20個。
+           - Snippet (構造化スニペット): 3種類以上。項目は / で区切ること。
+           - Callout (コールアウト): 8個以上。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
 
@@ -148,24 +142,24 @@ url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
-        with st.spinner("🚀 戦略・広告案を構築中..."):
+        with st.spinner("🚀 解析中..."):
             cleaned = asyncio.run(fetch_and_clean_content(url_in))
             st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
             st.balloons()
 
-# --- 6. 結果表示・パース ---
+# --- 6. 結果表示・パース・Excel出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     
-    # --- 解析文のクレンジング ---
+    # --- 解析文のクレンジング (冒頭の挨拶と末尾ヘッダーを除去) ---
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     
-    # 挨拶等の冒頭文を削除して「①」から開始
+    # ①より前の文章を削除
     if "①" in main_text:
         main_text = main_text[main_text.find("①"):]
     
-    # 末尾の不要なヘッダー（2. Google広告出力データ等）を削除
-    main_text = re.split(r'---|\n#+ \d\.|2\..*?\n', main_text)[0].strip()
+    # [DATA_START]直前の「2. Google広告出力データ」などのヘッダーを削除
+    main_text = re.sub(r"---?\s*###?\s*2\..*$", "", main_text, flags=re.MULTILINE | re.DOTALL).strip()
     
     df_all = None
     match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
