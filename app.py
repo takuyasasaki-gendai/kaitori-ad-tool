@@ -57,7 +57,7 @@ with st.sidebar:
     st.success("認証済み")
 
 # --- 4. メインヘッダーとロジック解説 ---
-st.title("広告プラン自動生成ツール")
+st.title("検索広告プラン自動生成ツール")
 
 st.markdown("""
 <div class="logic-box">
@@ -243,3 +243,4 @@ if st.session_state.ad_result:
     
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
+
