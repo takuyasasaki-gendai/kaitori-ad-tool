@@ -160,12 +160,13 @@ if st.session_state.ad_result:
     # --- 解析文のクレンジング (①強みから開始) ---
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     
-    # 前口上を削除
+    # 冒頭の不要な前口上をカット
     if "①" in analysis_raw:
         analysis_raw = analysis_raw[analysis_raw.find("①"):]
     
-    # 末尾の不要なヘッダーや区切り線を削除
-    cleaned_analysis = re.split(r'---|\n#+ \d\.|2\..*?\n', analysis_raw)[0].strip()
+    # 末尾の不要なヘッダー（CSV直前の見出し等）を削除
+    # リスト項目（2.）を巻き込まないように、特定のヘッダー形式のみを削除
+    cleaned_analysis = re.split(r'\n\s*(-{3,}|#{1,4}\s*[23]\.)', analysis_raw)[0].strip()
     
     df_all = None
     match_csv = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
@@ -214,8 +215,7 @@ if st.session_state.ad_result:
         st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
-            # 番号を 1 からにリセット
-            sub.index = range(1, len(sub) + 1)
+            sub.index = range(1, len(sub) + 1) # 番号を1からにリセット
             st.table(sub[["Content", "Details"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ/理由"}))
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
