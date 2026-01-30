@@ -28,6 +28,12 @@ st.markdown("""
     <style>
     .stApp { background-color: #121212; color: #ffffff !important; }
     .stApp p, .stApp span, .stApp div, .stApp li { color: #ffffff !important; }
+    /* 詳細ボタン(Popover)内の文字を黒に指定 */
+    div[data-testid="stPopoverBody"] p, 
+    div[data-testid="stPopoverBody"] span, 
+    div[data-testid="stPopoverBody"] div { 
+        color: #000000 !important; 
+    }
     section[data-testid="stSidebar"] { background-color: #1e1e1e !important; }
     .stDownloadButton>button { width: 100%; border-radius: 5px; height: 3.5em; background-color: #D4AF37; color: #000000 !important; border: none; font-weight: bold; }
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #D4AF37; color: white !important; border: none; font-weight: bold; }
@@ -54,7 +60,6 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         st.info("データの解析準備ができていません。")
         return
     
-    # TypeまたはContentに含まれるキーワードでフィルタ
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True) | \
            df['Content'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
@@ -76,6 +81,7 @@ def flexible_display(df, filter_keywords, label, exclude_keywords=None):
         if details:
             with cols[2]:
                 with st.popover("💡 詳細"):
+                    # ここで出力される文字はCSSにより黒くなります
                     st.write(details)
         else:
             cols[2].write("✅ WIN")
@@ -103,6 +109,7 @@ def generate_ad_plan(site_text, api_key):
         
         prompt = f"""
         あなたは日本最高峰の広告コンサルタントです。LPを分析し、以下のノルマを遵守してプランを作成してください。
+        [DATA_START] より前には分析結果のみを記述し、[DATA_START] 以降はCSVデータのみを出力してください。
 
         【重要：出力ノルマ】
         1. サイト分析（①強み ②課題 ③改善案）を記述。
@@ -111,7 +118,7 @@ def generate_ad_plan(site_text, api_key):
            - Headline (見出し): 15個。
            - Description (説明文): 4個。
            - Keyword (キーワード): 20個。
-           - Snippet (構造化スニペット): 3種類以上。**スニペットの項目はカンマではなく / で区切ってください**。
+           - Snippet (構造化スニペット): 3種類以上。項目は / で区切ること。
            - Callout (コールアウト): 8個以上。
         
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
@@ -143,7 +150,16 @@ if st.button("生成スタート"):
 # --- 6. 結果表示・パース・Excel出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
+    
+    # --- 解析文のクレンジング (冒頭の挨拶と末尾ヘッダーを除去) ---
     main_text = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
+    
+    # ①より前の文章を削除
+    if "①" in main_text:
+        main_text = main_text[main_text.find("①"):]
+    
+    # [DATA_START]直前の「2. Google広告出力データ」などのヘッダーを削除
+    main_text = re.sub(r"---?\s*###?\s*2\..*$", "", main_text, flags=re.MULTILINE | re.DOTALL).strip()
     
     df_all = None
     match = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
@@ -155,9 +171,7 @@ if st.session_state.ad_result:
         for line in csv_raw.splitlines():
             if "," in line:
                 cols = line.split(",")
-                # --- カンマ多すぎ問題を解消するロジック ---
                 if len(cols) > 7:
-                    # Type, Content, あとは全部 Details にまとめて結合
                     fixed_row = [cols[0], cols[1], " / ".join(cols[2:]), "", "", "", ""]
                     parsed_data.append(fixed_row[:7])
                 else:
@@ -178,7 +192,7 @@ if st.session_state.ad_result:
                     sub = df_all[df_all['Type'].astype(str).str.contains(k, case=False, na=False, regex=True) | 
                                  df_all['Content'].astype(str).str.contains(k, case=False, na=False, regex=True)]
                     if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
-            st.download_button("📊 Excelダウンロード", excel_io.getvalue(), "ad_report.xlsx")
+            st.download_button("📊 Excel形式でダウンロード", excel_io.getvalue(), "ad_report.xlsx")
         except: pass
 
     # --- タブ表示 ---
