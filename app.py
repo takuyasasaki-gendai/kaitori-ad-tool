@@ -50,7 +50,7 @@ st.markdown("""
 
 # --- 3. パスワード認証（サイドバー） ---
 with st.sidebar:
-    st.title("Admin Access")
+    st.title("Tool Access")
     if st.text_input("Password", type="password") != "password":
         st.warning("パスワードを入力してください")
         st.stop()
@@ -243,4 +243,5 @@ if st.session_state.ad_result:
     
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット")
+
 
