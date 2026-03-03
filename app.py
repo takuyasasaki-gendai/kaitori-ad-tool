@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
 # --- 1. 初期設定 ---
-st.set_page_config(page_title="広告ランク最適化ツール", layout="wide")
+st.set_page_config(page_title="Google広告プラン自動生成ツール", layout="wide")
 
 @st.cache_resource
 def install_playwright():
@@ -22,7 +22,7 @@ install_playwright()
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-# --- 重要：APIキーの定義 (ここでNameErrorを解消) ---
+# --- APIキーの設定 ---
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 if "ad_result" not in st.session_state:
@@ -55,20 +55,20 @@ with st.sidebar:
         st.stop()
     st.success("認証済み")
 
-# --- 4. メインヘッダーとロジック解説 ---
-st.title("広告プラン自動生成ツール")
+# --- 4. メインヘッダーと【汎用的】なロジック解説 ---
+st.title("Google広告プラン自動生成ツール")
 
 st.markdown("""
 <div class="logic-box">
-<h3>⚙️ セクション別・生成ロジックの解説</h3>
-当ツールは、LP解析結果（①）に基づき、Google広告の「品質スコア」を最大化させるため、各項目を以下のロジックで生成しています。
+<h3>⚙️ セクション別・生成ロジックの解説（全業界対応）</h3>
+当ツールは、入力されたURLの解析結果（①）に基づき、あらゆる業界で「品質スコア」を最大化させるための広告プランを自動構築します。
 <table class="logic-table">
     <tr><th>セクション</th><th>生成ロジック（AIの思考プロセス）</th></tr>
-    <tr><td><b>② 見出し(15案)</b></td><td>解析した強みから「ブランド名」「ベネフィット」「信頼性」を抽出し、30文字以内の検索意図に刺さるコピーへ変換します。</td></tr>
-    <tr><td><b>③ 説明文(4案)</b></td><td>見出しでは伝えきれない「安心感」や「具体的サービス内容」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
-    <tr><td><b>④ キーワード(20案)</b></td><td>「地域名 × サービス」「高額ブランド名 × 買取」など、獲得効率の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
-    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリや取扱ブランドを「種類」として分類し、一致度を高めます。</td></tr>
-    <tr><td><b>⑥ コールアウト</b></td><td>LP内の「選ばれる理由」を短文で抽出し、クリック率を向上させます。</td></tr>
+    <tr><td><b>② 見出し(15案)</b></td><td>解析した強み（USP）から、ターゲットの検索意図に刺さる「ベネフィット」「信頼性」「解決策」を抽出し、30文字以内のコピーに変換します。</td></tr>
+    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完し、ユーザーの不安を解消する「詳細な特徴」や「安心の根拠」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
+    <tr><td><b>④ キーワード(20案)</b></td><td>「サービス名 × ニーズ」「解決したい悩み × 地域」など、確度の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
+    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリやサービス内容を整理し、ユーザーが探している情報との「一致度」を視覚的に強調します。</td></tr>
+    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」「独自の付加価値」など、LP内の重要なベネフィットを短文で抽出し、クリックを強力に誘導します。</td></tr>
 </table>
 </div>
 """, unsafe_allow_html=True)
@@ -91,7 +91,7 @@ def flexible_display(df, filter_keywords, label):
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
     if sub_df.empty:
-        st.write("（具体的案が出力されませんでした。）")
+        st.write("（具体的案が出力されませんでした。再生成してください。）")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         content, details = clean_text(row.get('Content')), clean_text(row.get('Details'))
@@ -103,7 +103,7 @@ def flexible_display(df, filter_keywords, label):
                 with st.popover("💡 詳細"): st.write(details)
         else: cols[2].write("✅ WIN")
 
-# --- 6. 生成ロジック ---
+# --- 6. スクレイピング & 生成 ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -122,14 +122,14 @@ def generate_ad_plan(site_text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
-        あなたは日本最高峰の広告運用者です。LPを分析し、以下の個数ノルマを遵守してプランを作成してください。
-        【キーワード(④)のルール（重要）】
-        - 20個。Detailsに必ず「部分一致」「フレーズ一致」「完全一致」のいずれかを記入。「ターゲットキーワード」は使用禁止。
-        - Other1に、入札戦略・具体的理由を記入。
-        【個数】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
+        あなたは日本最高峰の広告運用コンサルタントです。LPを業界問わず分析し、以下のノルマを厳守して実戦的なプランを作成してください。
+        【キーワード(④)の出力ルール】
+        - 20個。Detailsに必ず「部分一致」「フレーズ一致」「完全一致」のいずれかを記入。
+        - Other1に、その業界・商材に合わせた入札戦略と具体的理由を記入。
+        【個数ノルマ】Headline: 15個。Description: 4個。Snippet: 3個以上。Callout: 10個。
         出力構成:
-        1. サイト分析（①強み ②課題 ③改善案）のみを記述。
-        2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
+        1. サイト分析（①強み ②課題 ③改善案）を記述。
+        2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
         サイト内容: {site_text}
         """
@@ -143,14 +143,14 @@ url_in = st.text_input("LPのURLを入力してください")
 if st.button("生成スタート"):
     if url_in:
         if not api_key:
-            st.error("APIキーが設定されていません。Secretsを確認してください。")
+            st.error("APIキーが未設定です")
         else:
-            with st.spinner("🚀 解析中..."):
+            with st.spinner("🚀 AIが業界・競合・LPを分析中..."):
                 cleaned = asyncio.run(fetch_and_clean_content(url_in))
                 st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
                 st.balloons()
 
-# --- 8. 表示 ---
+# --- 8. 結果表示 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -182,7 +182,7 @@ if st.session_state.ad_result:
                     if not sub_ex.empty:
                         sub_ex.index = range(1, len(sub_ex) + 1)
                         sub_ex.to_excel(writer, index=True, index_label="No", sheet_name=s_name)
-            st.download_button("📊 広告プランをExcelでダウンロード", excel_io.getvalue(), "ad_plan.xlsx")
+            st.download_button("📊 業界特化・広告プランをExcelでダウンロード", excel_io.getvalue(), "google_ad_plan.xlsx")
         except: pass
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
@@ -194,7 +194,7 @@ if st.session_state.ad_result:
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
             for idx, row in sub.iterrows():
-                if "ターゲット" in str(row['Details']):
+                if "ターゲット" in str(row['Details']) or not row['Details']:
                     h = str(row['Hint'])
                     sub.at[idx, 'Details'] = "部分一致" if "部分" in h else "フレーズ一致" if "フレーズ" in h else "完全一致" if "完全" in h else "部分一致"
                     if not row['Other1']: sub.at[idx, 'Other1'] = h
