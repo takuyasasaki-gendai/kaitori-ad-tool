@@ -18,7 +18,7 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 
 @st.cache_resource
 def install_playwright_binary():
-    """ブラウザ本体のみをインストール（依存関係はpackages.txtで解決済み）"""
+    """ブラウザバイナリを軽量インストール（依存関係はpackages.txtで解決済み）"""
     try:
         # Cloud環境で確実にパスを通すため python -m 経由で実行
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
@@ -122,7 +122,7 @@ async def fetch_and_clean_content(url):
                 "--disable-extensions"
             ]
         )
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36")
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
