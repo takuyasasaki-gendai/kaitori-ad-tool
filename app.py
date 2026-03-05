@@ -18,9 +18,9 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 
 @st.cache_resource
 def install_playwright_binary():
-    """Cloud環境でブラウザ本体を確実にインストールする"""
+    """ブラウザ本体のみをインストール（依存関係はpackages.txtで解決済み）"""
     try:
-        # 依存関係はpackages.txtで解決するため、バイナリのみを軽量インストール
+        # Cloud環境で確実にパスを通すため python -m 経由で実行
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
     except Exception as e:
         st.error(f"Browser installation failed: {e}")
@@ -60,7 +60,7 @@ with st.sidebar:
         st.stop()
     st.success("認証済み")
 
-# --- 4. メインヘッダーと生成ロジックの解説 ---
+# --- 4. 生成ロジックの解説 ---
 st.title("Google広告プラン自動生成ツール")
 st.markdown("""
 <div class="logic-box">
@@ -102,13 +102,13 @@ def flexible_display(df, filter_keywords, label):
         cols = st.columns([0.1, 0.7, 0.2])
         cols[0].write(i)
         cols[1].write(content)
-        # ②-⑥表示のWIN判定
+        # 判定表示
         if details and not any(x in details for x in ["見出し", "説明文", "コールアウト"]):
             with cols[2]:
                 with st.popover("💡 詳細"): st.write(details)
         else: cols[2].write("✅ WIN")
 
-# --- 6. スクレイピング (TargetClosedError対策強化) ---
+# --- 6. スクレイピング (TargetClosedError 徹底対策版) ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -118,7 +118,8 @@ async def fetch_and_clean_content(url):
                 "--disable-dev-shm-usage", 
                 "--disable-gpu", 
                 "--disable-setuid-sandbox",
-                "--single-process"
+                "--single-process",
+                "--disable-extensions"
             ]
         )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36")
@@ -137,7 +138,7 @@ def generate_ad_plan(site_text, api_key):
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
         あなたは日本最高峰のコンサルタントです。LPを業界問わず分析し、以下を厳守してください。
-        【キーワード(④)ルール】20個出力。Detailsにマッチタイプ(部分一致/フレーズ一致/完全一致)、Other1にそのマッチタイプを選んだ入札戦略・具体的理由を記述。
+        【キーワード(④)ルール】20個。Detailsにマッチタイプ(部分一致/フレーズ一致/完全一致)、Other1にそのマッチタイプを選んだ入札戦略・具体的理由を記述。
         【個数】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
         出力構成:
         1. サイト分析（①強み ②課題 ③改善案）のみ記述。
@@ -149,13 +150,13 @@ def generate_ad_plan(site_text, api_key):
         return response.text
     except Exception as e: return f"AIエラー: {str(e)}"
 
-# --- 7. メイン実行 ---
+# --- 7. URL入力エリア ---
 url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
         if not api_key:
-            st.error("SecretsにGEMINI_API_KEYを設定してください。")
+            st.error("Secrets設定を確認してください")
         else:
             with st.spinner("🚀 AIが業界・LPを分析中..."):
                 cleaned = asyncio.run(fetch_and_clean_content(url_in))
@@ -165,7 +166,7 @@ if st.button("生成スタート"):
                     st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
                     st.balloons()
 
-# --- 8. 結果の表示とデータ整形 ---
+# --- 8. 表示とExcel出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -208,7 +209,7 @@ if st.session_state.ad_result:
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個・マッチタイプ別）"), unsafe_allow_html=True)
         if df_all is not None:
-            # キーワード戦略の3列表示
+            # キーワード戦略の3列表示復旧
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
             for idx, row in sub.iterrows():
                 if "ターゲット" in str(row['Details']) or not row['Details']:
