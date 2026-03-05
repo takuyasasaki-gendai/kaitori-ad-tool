@@ -13,16 +13,15 @@ from bs4 import BeautifulSoup
 # --- 1. 初期設定 ---
 st.set_page_config(page_title="Google広告プラン自動生成ツール", layout="wide")
 
-# APIキーの設定 (NameError対策)
+# APIキーの設定
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 @st.cache_resource
 def install_playwright_binary():
-    """Playwrightのブラウザ本体と依存関係を確実にインストールする"""
+    """Playwrightのブラウザ本体のみをインストール（依存関係はpackages.txtで解決済み）"""
     try:
+        # install-depsは権限エラーになるため、installのみ実行
         subprocess.run(["playwright", "install", "chromium"], check=True)
-        # Cloud環境特有の依存関係不足を解消
-        subprocess.run(["playwright", "install-deps", "chromium"], check=True)
     except Exception as e:
         st.error(f"Browser installation failed: {e}")
 
@@ -53,7 +52,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. パスワード認証 (サイドバー) ---
+# --- 3. パスワード認証 ---
 with st.sidebar:
     st.title("Admin Access")
     if st.text_input("Password", type="password") != "password":
@@ -61,7 +60,7 @@ with st.sidebar:
         st.stop()
     st.success("認証済み")
 
-# --- 4. メインヘッダーとロジック解説 (全業界対応) ---
+# --- 4. メインヘッダーとロジック解説（汎用版） ---
 st.title("Google広告プラン自動生成ツール")
 
 st.markdown("""
@@ -71,10 +70,10 @@ st.markdown("""
 <table class="logic-table">
     <tr><th>セクション</th><th>生成ロジック（AIの思考プロセス）</th></tr>
     <tr><td><b>② 見出し(15案)</b></td><td>解析した独自の強み（USP）から、ターゲットの検索意図に刺さる「ベネフィット」を抽出し、30文字以内のコピーに変換します。</td></tr>
-    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完する「安心感」や「具体的詳細」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
-    <tr><td><b>④ キーワード(20案)</b></td><td>「地域名×ニーズ」「特定商材名×目的」など、獲得効率の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
-    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリやサービス内容を分類し、ユーザーが探している情報との「一致度」を高めます。</td></tr>
-    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」など、LP内の重要なベネフィットを短文で抽出し、クリックを強力に誘導します。</td></tr>
+    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完しユーザーの不安を解消する「詳細な特徴」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
+    <tr><td><b>④ キーワード(20案)</b></td><td>獲得効率の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
+    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品・サービスカテゴリを分類し、ユーザーが探している情報との「一致度」を高めます。</td></tr>
+    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」など、LP内の重要なベネフィットを短文で抽出し、クリックを誘導します。</td></tr>
 </table>
 </div>
 """, unsafe_allow_html=True)
@@ -109,18 +108,12 @@ def flexible_display(df, filter_keywords, label):
                 with st.popover("💡 詳細"): st.write(details)
         else: cols[2].write("✅ WIN")
 
-# --- 6. スクレイピング (TargetClosedError対策) ---
+# --- 6. スクレイピング ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
-        # ブラウザ起動オプションをCloud用に最適化
         browser = await p.chromium.launch(
             headless=True, 
-            args=[
-                "--no-sandbox", 
-                "--disable-dev-shm-usage", 
-                "--disable-gpu", 
-                "--disable-setuid-sandbox"
-            ]
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
         page = await context.new_page()
@@ -137,15 +130,12 @@ def generate_ad_plan(site_text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
-        あなたは日本最高峰の広告運用コンサルタントです。LPを業界問わず分析し、以下のノルマを遵守してプランを作成してください。
-        【キーワード(④)の出力ルール】
-        - 20個。Typeは 'Keyword'。
-        - Detailsに必ず '部分一致', 'フレーズ一致', '完全一致' のいずれかを記入。「ターゲットキーワード」という言葉は禁止。
-        - Other1に、その商材に合わせた入札戦略と具体的理由を記入。
-        【個数ノルマ】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
+        あなたは日本最高峰のコンサルタントです。LPを業界問わず分析し、以下を厳守してください。
+        【キーワード(④)ルール】20個。Detailsにマッチタイプ、Other1に戦略理由。
+        【個数】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
         出力構成:
         1. サイト分析（①強み ②課題 ③改善案）のみ記述。
-        2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
+        2. [DATA_START] と [DATA_END] で囲んでCSVを出力。
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
         サイト内容: {site_text}
         """
@@ -153,15 +143,15 @@ def generate_ad_plan(site_text, api_key):
         return response.text
     except Exception as e: return f"AIエラー: {str(e)}"
 
-# --- 7. メイン実行エリア ---
+# --- 7. URL入力 ---
 url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
         if not api_key:
-            st.error("SecretsにGEMINI_API_KEYを設定してください。")
+            st.error("Secrets設定を確認してください")
         else:
-            with st.spinner("🚀 AIがLPを深層解析中..."):
+            with st.spinner("🚀 AIが業界・競合・LPを分析中..."):
                 cleaned = asyncio.run(fetch_and_clean_content(url_in))
                 if "解析エラー" in cleaned:
                     st.error(cleaned)
@@ -169,11 +159,9 @@ if st.button("生成スタート"):
                     st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
                     st.balloons()
 
-# --- 8. 結果表示 ---
+# --- 8. 表示とExcel出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
-    
-    # 解析文の抽出
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     if "①" in analysis_raw: analysis_raw = analysis_raw[analysis_raw.find("①"):]
     cleaned_analysis = re.split(r'\n\s*(-{3,}|#{1,4}\s*[23]\.)', analysis_raw)[0].strip()
@@ -192,7 +180,6 @@ if st.session_state.ad_result:
         if parsed_data:
             df_all = pd.DataFrame(parsed_data, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
 
-    # Excelダウンロードボタン
     if df_all is not None:
         try:
             excel_io = io.BytesIO()
@@ -204,10 +191,9 @@ if st.session_state.ad_result:
                     if not sub_ex.empty:
                         sub_ex.index = range(1, len(sub_ex) + 1)
                         sub_ex.to_excel(writer, index=True, index_label="No", sheet_name=s_name)
-            st.download_button("📊 業界特化・広告プランをExcelでダウンロード", excel_io.getvalue(), "google_ad_plan.xlsx")
+            st.download_button("📊 業界特化プランをExcelでダウンロード", excel_io.getvalue(), "google_ad_plan.xlsx")
         except: pass
 
-    # タブ表示
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
     with tab1: st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
     with tab2: flexible_display(df_all, "Headline|見出し", "② 広告見出し15案")
@@ -216,7 +202,6 @@ if st.session_state.ad_result:
         st.markdown(apply_decoration("④ キーワード戦略（20個・マッチタイプ別）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
-            # 救済ロジック: 「ターゲット」という語が入っていたらHintから抽出
             for idx, row in sub.iterrows():
                 if "ターゲット" in str(row['Details']) or not row['Details']:
                     h = str(row['Hint'])
