@@ -5,6 +5,7 @@ import os
 import pandas as pd
 import io
 import re
+import subprocess
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -12,18 +13,23 @@ from bs4 import BeautifulSoup
 # --- 1. 初期設定 ---
 st.set_page_config(page_title="Google広告プラン自動生成ツール", layout="wide")
 
-@st.cache_resource
-def install_playwright():
-    if sys.platform != "win32":
-        os.system("playwright install chromium")
+# APIキーの設定 (NameError対策)
+api_key = st.secrets.get("GEMINI_API_KEY")
 
-install_playwright()
+@st.cache_resource
+def install_playwright_binary():
+    """Playwrightのブラウザ本体と依存関係を確実にインストールする"""
+    try:
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+        # Cloud環境特有の依存関係不足を解消
+        subprocess.run(["playwright", "install-deps", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Browser installation failed: {e}")
+
+install_playwright_binary()
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-# --- APIキーの設定 ---
-api_key = st.secrets.get("GEMINI_API_KEY")
 
 if "ad_result" not in st.session_state:
     st.session_state.ad_result = None
@@ -47,28 +53,28 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. パスワード認証 ---
+# --- 3. パスワード認証 (サイドバー) ---
 with st.sidebar:
     st.title("Admin Access")
     if st.text_input("Password", type="password") != "password":
-        st.warning("パスワードを入力してください")
+        st.warning("正しいパスワードを入力してください")
         st.stop()
     st.success("認証済み")
 
-# --- 4. メインヘッダーと【汎用的】なロジック解説 ---
+# --- 4. メインヘッダーとロジック解説 (全業界対応) ---
 st.title("Google広告プラン自動生成ツール")
 
 st.markdown("""
 <div class="logic-box">
-<h3>⚙️ セクション別・生成ロジックの解説（全業界対応）</h3>
-当ツールは、入力されたURLの解析結果（①）に基づき、あらゆる業界で「品質スコア」を最大化させるための広告プランを自動構築します。
+<h3>⚙️ セクション別・生成ロジックの解説</h3>
+当ツールは、LP解析結果（①）に基づき、Google広告の「品質スコア」を最大化させるため、各項目を以下のロジックで生成しています。
 <table class="logic-table">
     <tr><th>セクション</th><th>生成ロジック（AIの思考プロセス）</th></tr>
-    <tr><td><b>② 見出し(15案)</b></td><td>解析した強み（USP）から、ターゲットの検索意図に刺さる「ベネフィット」「信頼性」「解決策」を抽出し、30文字以内のコピーに変換します。</td></tr>
-    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完し、ユーザーの不安を解消する「詳細な特徴」や「安心の根拠」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
-    <tr><td><b>④ キーワード(20案)</b></td><td>「サービス名 × ニーズ」「解決したい悩み × 地域」など、確度の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
-    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリやサービス内容を整理し、ユーザーが探している情報との「一致度」を視覚的に強調します。</td></tr>
-    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」「独自の付加価値」など、LP内の重要なベネフィットを短文で抽出し、クリックを強力に誘導します。</td></tr>
+    <tr><td><b>② 見出し(15案)</b></td><td>解析した独自の強み（USP）から、ターゲットの検索意図に刺さる「ベネフィット」を抽出し、30文字以内のコピーに変換します。</td></tr>
+    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完する「安心感」や「具体的詳細」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
+    <tr><td><b>④ キーワード(20案)</b></td><td>「地域名×ニーズ」「特定商材名×目的」など、獲得効率の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
+    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリやサービス内容を分類し、ユーザーが探している情報との「一致度」を高めます。</td></tr>
+    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」など、LP内の重要なベネフィットを短文で抽出し、クリックを強力に誘導します。</td></tr>
 </table>
 </div>
 """, unsafe_allow_html=True)
@@ -91,7 +97,7 @@ def flexible_display(df, filter_keywords, label):
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
     if sub_df.empty:
-        st.write("（具体的案が出力されませんでした。再生成してください。）")
+        st.write("（案が出力されませんでした。再実行してください。）")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         content, details = clean_text(row.get('Content')), clean_text(row.get('Details'))
@@ -103,18 +109,27 @@ def flexible_display(df, filter_keywords, label):
                 with st.popover("💡 詳細"): st.write(details)
         else: cols[2].write("✅ WIN")
 
-# --- 6. スクレイピング & 生成 ---
+# --- 6. スクレイピング (TargetClosedError対策) ---
 async def fetch_and_clean_content(url):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
+        # ブラウザ起動オプションをCloud用に最適化
+        browser = await p.chromium.launch(
+            headless=True, 
+            args=[
+                "--no-sandbox", 
+                "--disable-dev-shm-usage", 
+                "--disable-gpu", 
+                "--disable-setuid-sandbox"
+            ]
+        )
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
             soup = BeautifulSoup(await page.content(), "html.parser")
             for s in soup(["script", "style", "nav", "footer"]): s.decompose()
             return " ".join(soup.get_text(separator=" ").split())[:4000]
-        except: return "解析エラー"
+        except Exception as e: return f"解析エラー: {e}"
         finally: await browser.close()
 
 def generate_ad_plan(site_text, api_key):
@@ -122,37 +137,43 @@ def generate_ad_plan(site_text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
-        あなたは日本最高峰の広告運用コンサルタントです。LPを業界問わず分析し、以下のノルマを厳守して実戦的なプランを作成してください。
+        あなたは日本最高峰の広告運用コンサルタントです。LPを業界問わず分析し、以下のノルマを遵守してプランを作成してください。
         【キーワード(④)の出力ルール】
-        - 20個。Detailsに必ず「部分一致」「フレーズ一致」「完全一致」のいずれかを記入。
-        - Other1に、その業界・商材に合わせた入札戦略と具体的理由を記入。
-        【個数ノルマ】Headline: 15個。Description: 4個。Snippet: 3個以上。Callout: 10個。
+        - 20個。Typeは 'Keyword'。
+        - Detailsに必ず '部分一致', 'フレーズ一致', '完全一致' のいずれかを記入。「ターゲットキーワード」という言葉は禁止。
+        - Other1に、その商材に合わせた入札戦略と具体的理由を記入。
+        【個数ノルマ】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
         出力構成:
-        1. サイト分析（①強み ②課題 ③改善案）を記述。
+        1. サイト分析（①強み ②課題 ③改善案）のみ記述。
         2. その後 [DATA_START] と [DATA_END] で囲んでCSVを出力。
         CSVカラム: Type,Content,Details,Other1,Other2,Status,Hint
         サイト内容: {site_text}
         """
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"生成エラー: {str(e)}"
+    except Exception as e: return f"AIエラー: {str(e)}"
 
-# --- 7. URL入力 ---
+# --- 7. メイン実行エリア ---
 url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
         if not api_key:
-            st.error("APIキーが未設定です")
+            st.error("SecretsにGEMINI_API_KEYを設定してください。")
         else:
-            with st.spinner("🚀 AIが業界・競合・LPを分析中..."):
+            with st.spinner("🚀 AIがLPを深層解析中..."):
                 cleaned = asyncio.run(fetch_and_clean_content(url_in))
-                st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
-                st.balloons()
+                if "解析エラー" in cleaned:
+                    st.error(cleaned)
+                else:
+                    st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
+                    st.balloons()
 
 # --- 8. 結果表示 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
+    
+    # 解析文の抽出
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
     if "①" in analysis_raw: analysis_raw = analysis_raw[analysis_raw.find("①"):]
     cleaned_analysis = re.split(r'\n\s*(-{3,}|#{1,4}\s*[23]\.)', analysis_raw)[0].strip()
@@ -161,6 +182,7 @@ if st.session_state.ad_result:
     match_csv = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
     if match_csv:
         csv_raw = match_csv.group(1).strip()
+        csv_raw = re.sub(r"```[a-z]*", "", csv_raw).replace("```", "").strip()
         parsed_data = []
         for line in csv_raw.splitlines():
             if "," in line:
@@ -170,7 +192,7 @@ if st.session_state.ad_result:
         if parsed_data:
             df_all = pd.DataFrame(parsed_data, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
 
-    # Excelボタン
+    # Excelダウンロードボタン
     if df_all is not None:
         try:
             excel_io = io.BytesIO()
@@ -185,6 +207,7 @@ if st.session_state.ad_result:
             st.download_button("📊 業界特化・広告プランをExcelでダウンロード", excel_io.getvalue(), "google_ad_plan.xlsx")
         except: pass
 
+    # タブ表示
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
     with tab1: st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
     with tab2: flexible_display(df_all, "Headline|見出し", "② 広告見出し15案")
@@ -193,6 +216,7 @@ if st.session_state.ad_result:
         st.markdown(apply_decoration("④ キーワード戦略（20個・マッチタイプ別）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
+            # 救済ロジック: 「ターゲット」という語が入っていたらHintから抽出
             for idx, row in sub.iterrows():
                 if "ターゲット" in str(row['Details']) or not row['Details']:
                     h = str(row['Hint'])
