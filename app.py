@@ -18,7 +18,7 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 
 @st.cache_resource
 def install_playwright_binary():
-    """ブラウザバイナリを軽量インストール（依存関係はpackages.txtで解決済み）"""
+    """ブラウザ本体のみをインストール（依存関係はpackages.txtで解決済み）"""
     try:
         # Cloud環境で確実にパスを通すため python -m 経由で実行
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
