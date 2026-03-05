@@ -9,3 +9,5 @@ libxdamage1
 libxrandr2
 libgbm1
 libasound2
+libpango-1.0-0
+libcairo2
