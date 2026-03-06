@@ -6,6 +6,7 @@ import pandas as pd
 import io
 import re
 import subprocess
+import requests
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -13,17 +14,16 @@ from bs4 import BeautifulSoup
 # --- 1. 初期設定 ---
 st.set_page_config(page_title="Google広告プラン自動生成ツール", layout="wide")
 
-# APIキーの取得 (NameError対策)
+# APIキーの取得
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 @st.cache_resource
 def install_playwright_binary():
-    """ブラウザ本体のみをインストール。依存関係はpackages.txtで解決。"""
+    """Cloud環境でブラウザ本体を確実にインストール"""
     try:
-        # python -m playwright 経由で確実にインストール
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
     except Exception as e:
-        st.error(f"Browser installation failed: {e}")
+        print(f"Playwright installation skipped or failed: {e}")
 
 install_playwright_binary()
 
@@ -65,14 +65,14 @@ st.title("Google広告プラン自動生成ツール")
 st.markdown("""
 <div class="logic-box">
 <h3>⚙️ セクション別・生成ロジックの解説</h3>
-当ツールは、LP解析結果（①）に基づき、Google広告の「品質スコア」を最大化させるため、各項目を以下のロジックで生成しています。
+あらゆる業界で「品質スコア」を最大化させるため、各項目を以下の思考ロジックで自動構築します。
 <table class="logic-table">
-    <tr><th>セクション</th><th>生成ロジック（AIの思考プロセス）</th></tr>
-    <tr><td><b>② 見出し(15案)</b></td><td>解析した独自の強み（USP）から、ターゲットの検索意図に刺さる「ベネフィット」を抽出し、30文字以内のコピーに変換します。</td></tr>
-    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完しユーザーの不安を解消する「詳細な特徴」を、LPの文脈を維持したまま90文字の文章に構成します。</td></tr>
-    <tr><td><b>④ キーワード(20案)</b></td><td>獲得効率の高い組み合わせをマッチタイプ別に戦略的に選定します。</td></tr>
-    <tr><td><b>⑤ スニペット</b></td><td>LP内の商品カテゴリやサービス内容を分類し、ユーザーが探している情報との「一致度」を高めます。</td></tr>
-    <tr><td><b>⑥ コールアウト</b></td><td>「実績」「利便性」など、LP内の重要なベネフィットを短文で抽出し、クリックを強力に誘導します。</td></tr>
+    <tr><th>セクション</th><th>生成ロジック（思考プロセス）</th></tr>
+    <tr><td><b>② 見出し(15案)</b></td><td>独自の強み（USP）から、検索意図に刺さる「ベネフィット」を抽出し30文字以内に変換します。</td></tr>
+    <tr><td><b>③ 説明文(4案)</b></td><td>見出しを補完しユーザーの不安を解消する「詳細な特徴」を90文字に文章化します。</td></tr>
+    <tr><td><b>④ キーワード(20案)</b></td><td>「ニーズ×目的」等の組み合わせを、マッチタイプ別に戦略的に選定します。</td></tr>
+    <tr><td><b>⑤ スニペット</b></td><td>商品カテゴリやサービスを分類し、ユーザーの目的との一致度を高めます。</td></tr>
+    <tr><td><b>⑥ コールアウト</b></td><td>LP内の重要な利点を短文で抽出し、クリック率を向上させます。</td></tr>
 </table>
 </div>
 """, unsafe_allow_html=True)
@@ -94,57 +94,51 @@ def flexible_display(df, filter_keywords, label):
     if df is None or df.empty: return
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
-    if sub_df.empty:
-        st.write("（具体的案が出力されませんでした。）")
-        return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         content, details = clean_text(row.get('Content')), clean_text(row.get('Details'))
         cols = st.columns([0.1, 0.7, 0.2])
         cols[0].write(i)
         cols[1].write(content)
-        # 品質判定表示
+        # 品質判定
         if details and not any(x in details for x in ["見出し", "説明文", "コールアウト"]):
             with cols[2]:
                 with st.popover("💡 詳細"): st.write(details)
         else: cols[2].write("✅ WIN")
 
-# --- 6. スクレイピング (TargetClosedError 徹底対策版) ---
+# --- 6. ハイブリッド・スクレイピング (エラー回避ロジック) ---
 async def fetch_and_clean_content(url):
-    async with async_playwright() as p:
-        # ブラウザの起動オプションを極限まで軽量化
-        browser = await p.chromium.launch(
-            headless=True, 
-            args=[
-                "--no-sandbox", 
-                "--disable-dev-shm-usage", 
-                "--disable-gpu", 
-                "--disable-setuid-sandbox",
-                "--single-process",
-                "--disable-extensions",
-                "--no-zygote"
-            ]
-        )
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36")
-        page = await context.new_page()
+    # 1. まずはPlaywright(ブラウザ)で試行
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"]
+            )
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=45000)
+            html = await page.content()
+            await browser.close()
+            soup = BeautifulSoup(html, "html.parser")
+    except Exception as e:
+        # 2. ブラウザがエラー(TargetClosedError等)ならrequestsで直接取得
+        print(f"Browser failed, using requests: {e}")
         try:
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            soup = BeautifulSoup(await page.content(), "html.parser")
-            for s in soup(["script", "style", "nav", "footer"]): s.decompose()
-            return " ".join(soup.get_text(separator=" ").split())[:4000]
-        except Exception as e: return f"解析エラー: {e}"
-        finally: await browser.close()
+            resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+        except:
+            return "解析エラー: サイトの情報を取得できませんでした。"
+
+    for s in soup(["script", "style", "nav", "footer"]): s.decompose()
+    return " ".join(soup.get_text(separator=" ").split())[:4000]
 
 def generate_ad_plan(site_text, api_key):
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
-        あなたは日本最高峰の広告コンサルタントです。LPを業界問わず分析し、以下を厳守してください。
-        【キーワード(④)ルール】
-        - 20個出力。Typeは 'Keyword'。
-        - Detailsにマッチタイプ(部分一致/フレーズ一致/完全一致)のいずれか1つのみ記入。
-        - Other1にそのキーワード・マッチタイプを選んだ入札戦略と具体的理由を詳しく記述。
-        - 「ターゲットキーワード」という言葉は禁止。
+        あなたは日本最高峰のコンサルタントです。LPを業界問わず分析し、以下を厳守してください。
+        【キーワード(④)ルール】20個。Detailsにマッチタイプ(部分一致/フレーズ一致/完全一致)、Other1に戦略理由。
         【個数】Headline: 15個。Description: 4個。Snippet: 3個。Callout: 10個。
         出力構成:
         1. サイト分析（①強み ②課題 ③改善案）のみ記述。
@@ -156,23 +150,23 @@ def generate_ad_plan(site_text, api_key):
         return response.text
     except Exception as e: return f"AIエラー: {str(e)}"
 
-# --- 7. URL入力エリア ---
+# --- 7. メイン実行 ---
 url_in = st.text_input("LPのURLを入力してください")
 
 if st.button("生成スタート"):
     if url_in:
         if not api_key:
-            st.error("Secrets設定でGEMINI_API_KEYを確認してください")
+            st.error("APIキー未設定")
         else:
-            with st.spinner("🚀 AIがLPの強み・業界を分析中..."):
+            with st.spinner("🚀 戦略構築中..."):
                 cleaned = asyncio.run(fetch_and_clean_content(url_in))
                 if "解析エラー" in cleaned:
-                    st.error(f"サイトの読み込みに失敗しました: {cleaned}")
+                    st.error(cleaned)
                 else:
                     st.session_state.ad_result = generate_ad_plan(cleaned, api_key)
                     st.balloons()
 
-# --- 8. 表示とExcel出力 ---
+# --- 8. 結果表示 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     analysis_raw = res.split("[DATA_START]")[0].strip() if "[DATA_START]" in res else res
@@ -218,17 +212,10 @@ if st.session_state.ad_result:
             # キーワード戦略の3列表示復旧
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
             for idx, row in sub.iterrows():
-                # 救済ロジック：AIが「ターゲット」と出力してしまった場合、HintやOther1から正規表現でマッチタイプを探す
-                current_details = str(row['Details'])
-                if "ターゲット" in current_details or not current_details:
-                    text_to_search = str(row['Other1']) + str(row['Hint'])
-                    if "部分" in text_to_search: sub.at[idx, 'Details'] = "部分一致"
-                    elif "フレーズ" in text_to_search: sub.at[idx, 'Details'] = "フレーズ一致"
-                    elif "完全" in text_to_search: sub.at[idx, 'Details'] = "完全一致"
-                    else: sub.at[idx, 'Details'] = "部分一致" # 最終手段
-                    # 理由が空ならHintをコピー
+                if "ターゲット" in str(row['Details']) or not row['Details']:
+                    h = str(row['Hint']) + str(row['Other1'])
+                    sub.at[idx, 'Details'] = "部分一致" if "部分" in h else "フレーズ一致" if "フレーズ" in h else "完全一致" if "完全" in h else "部分一致"
                     if not row['Other1']: sub.at[idx, 'Other1'] = row['Hint']
-            
             sub.index = range(1, len(sub) + 1)
             st.table(sub[["Content", "Details", "Other1"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ", "Other1": "入札戦略・理由"}))
     with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット")
