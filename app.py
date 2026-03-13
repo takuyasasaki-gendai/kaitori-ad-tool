@@ -18,7 +18,6 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 @st.cache_resource
 def install_playwright_binary():
     try:
-        # 確実にパスを通すため python -m 経由で実行
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
     except: pass
 
@@ -56,25 +55,11 @@ with st.sidebar:
         st.warning("パスワードを入力してください")
         st.stop()
     st.success("認証済み")
-    if st.button("キャッシュをクリアして再起動"):
-        st.cache_resource.clear()
+    if st.button("リセット（再起動）"):
+        st.session_state.ad_result = None
         st.rerun()
 
-# --- 4. ロジック解説 ---
-st.title("Google広告プラン自動生成ツール")
-st.markdown("""
-<div class="logic-box">
-<h3>⚙️ 広告プラン構築の思考プロセス</h3>
-<table class="logic-table">
-    <tr><th>項目</th><th>生成ロジック</th></tr>
-    <tr><td><b>② 見出し(15)</b></td><td>解析したUSPから検索意図に刺さる「ベネフィット」を抽出。</td></tr>
-    <tr><td><b>④ キーワード(20)</b></td><td>ニーズ別にマッチタイプ（部分・フレーズ・完全）を戦略的に選定。</td></tr>
-    <tr><td><b>⑤⑥ 詳細ボタン</b></td><td>設定に必要な「ヘッダー種別」や「具体的な戦略理由」を表示。</td></tr>
-</table>
-</div>
-""", unsafe_allow_html=True)
-
-# --- 5. 補助関数 ---
+# --- 4. 補助関数 ---
 def clean_text(text):
     if not text or pd.isna(text): return ""
     return str(text).replace("**", "").replace("###", "").replace("`", "").replace('"', '').strip()
@@ -88,11 +73,13 @@ def apply_decoration(text):
 
 def flexible_display(df, filter_keywords, label, is_asset=False):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
-    if df is None or df.empty: return
+    if df is None or df.empty:
+        st.write("（データが存在しません。再生成してください。）")
+        return
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
     if sub_df.empty:
-        st.write("（データがありません。再生成してください。）")
+        st.write("（該当する広告案がありませんでした。もう一度お試しください。）")
         return
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
         content, details = clean_text(row.get('Content')), clean_text(row.get('Details'))
@@ -105,24 +92,21 @@ def flexible_display(df, filter_keywords, label, is_asset=False):
                 with st.popover("💡 詳細"): st.write(display_details if display_details else "戦略的最適化済み")
         else: cols[2].write("✅ WIN")
 
-# --- 6. 超堅牢・ハイブリッド解析 ---
+# --- 5. スクレイピング ---
 async def fetch_content(url):
-    # 経路1: Playwright (JavaScript実行サイト用)
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process", "--no-zygote"])
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"])
             page = await browser.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             html = await page.content()
             await browser.close()
             soup = BeautifulSoup(html, "html.parser")
-    except Exception as e:
-        # 経路2: Requests (軽量・高速)
+    except:
         try:
             resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             soup = BeautifulSoup(resp.text, "html.parser")
         except: return None
-
     if soup:
         for s in soup(["script", "style", "nav", "footer"]): s.decompose()
         return " ".join(soup.get_text(separator=" ").split())[:4000]
@@ -133,69 +117,88 @@ def generate_ad_plan(site_text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
-        あなたは日本最高峰の広告コンサルタントです。LPを業界問わず分析し以下を厳守してください。
-        【出力】
-        1. サイト解析（①強み ②課題 ③改善案）
-        2. [DATA_START] CSVデータ [DATA_END]
-        【CSVカラム】Type,Content,Details,Other1,Other2,Status,Hint
-        - ④Keyword: 20個。Detailsにマッチタイプ、Other1に理由。
-        - ⑤Snippet: Detailsにヘッダー種別。⑥Callout: Detailsに訴求メリット。注釈禁止。
-        内容: {site_text}
+        あなたは日本最高峰の広告運用者です。LPを分析し、以下の形式で出力してください。Markdown装飾は不要です。
+        
+        【1. サイト解析】
+        ①強み、②課題、③改善案を詳しく記述してください。
+        
+        【2. データセクション】
+        [DATA_START] と [DATA_END] の間に、以下のカラムを持つCSVを出力してください。
+        Type,Content,Details,Other1,Other2,Status,Hint
+        
+        - Headline: 見出し15個
+        - Description: 説明文4個
+        - Keyword: キーワード20個。Detailsにマッチタイプ、Other1に入札理由。
+        - Snippet: スニペット。Detailsに種別。
+        - Callout: コールアウト。Detailsにメリット。
+        
+        サイト内容: {site_text}
         """
         response = model.generate_content(prompt)
         return response.text
     except Exception as e: return f"AIエラー: {str(e)}"
 
-# --- 7. 入力エリア ---
-input_mode = st.radio("入力方法を選択してください", ["URLを読み込む", "テキストを直接入力する"])
-input_data = ""
+# --- 6. 実行エリア ---
+st.title("Google広告プラン自動生成ツール")
 
-if input_mode == "URLを読み込む":
-    url_in = st.text_input("LPのURLを入力してください")
-    if st.button("生成スタート"):
+input_mode = st.radio("入力方法", ["URL読み込み", "直接入力"])
+raw_text = ""
+
+if input_mode == "URL読み込み":
+    url_in = st.text_input("LPのURL")
+    if st.button("生成開始"):
         if url_in:
-            with st.spinner("🚀 サイトを解析中..."):
-                input_data = asyncio.run(fetch_content(url_in))
-                if not input_data: st.error("サイトを読み込めませんでした。直接入力をお試しください。")
+            with st.spinner("🚀 読み込み中..."):
+                raw_text = asyncio.run(fetch_content(url_in))
+                if not raw_text: st.error("読み込み失敗")
 else:
-    input_data = st.text_area("LPのテキスト（強みやサービス内容）を貼り付けてください", height=200)
-    if st.button("解析・生成スタート"):
-        if not input_data: st.error("テキストを入力してください")
+    raw_text = st.text_area("LPテキスト貼り付け", height=200)
+    if st.button("生成開始"):
+        if not raw_text: st.error("入力してください")
 
-# --- 8. 生成と表示 ---
-if input_data and "生成" in st.session_state.get("last_clicked", "生成"):
-    with st.spinner("🚀 広告戦略を構築中..."):
-        st.session_state.ad_result = generate_ad_plan(input_data, api_key)
+if raw_text:
+    with st.spinner("🚀 プラン生成中..."):
+        st.session_state.ad_result = generate_ad_plan(raw_text, api_key)
         st.balloons()
 
+# --- 7. 結果表示 (パースロジック強化) ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     
-    # ①解析情報の復旧
+    # ① 解析情報の抽出
     analysis_raw = res.split("[DATA_START]")[0].strip()
     if "①" in analysis_raw: analysis_raw = analysis_raw[analysis_raw.find("①"):]
-    cleaned_analysis = re.split(r'\n\s*(\[DATA_START\])', analysis_raw)[0].strip()
+    cleaned_analysis = re.split(r'(\[DATA_START\])', analysis_raw)[0].strip()
     
-    # CSVパース
+    # CSVデータの抽出とクリーニング
     df_all = None
     match_csv = re.search(r"\[DATA_START\](.*?)\[DATA_END\]", res, re.DOTALL | re.IGNORECASE)
     if match_csv:
-        csv_raw = match_csv.group(1).strip()
-        parsed_data = []
-        for line in csv_raw.splitlines():
-            # カンマ区切りの堅牢な分割
+        csv_block = match_csv.group(1).strip()
+        # AIが勝手に追加するMarkdownコードブロック（```）を除去
+        csv_block = re.sub(r"```[a-z]*", "", csv_block).replace("```", "").strip()
+        
+        parsed_rows = []
+        for line in csv_block.splitlines():
+            # CSVの基本的なカンマパース
             parts = re.findall(r'([^,"]+|"[^"]*")+', line)
             parts = [p.strip().strip('"') for p in parts]
             if len(parts) >= 2:
-                while len(parts) < 7: parts.append("")
-                parsed_data.append(parts[:7])
-        df_all = pd.DataFrame(parsed_data, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
+                while len(parts) < 7: parts.append("") # 7列に合わせる
+                parsed_rows.append(parts[:7])
+        
+        if parsed_rows:
+            df_all = pd.DataFrame(parsed_rows, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
 
-    # 表示
+    # UI表示
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["① 解析", "② 見出し(15)", "③ 説明文(4)", "④ キーワード(20)", "⑤ スニペット", "⑥ コールアウト"])
-    with tab1: st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
+    
+    with tab1:
+        st.markdown(f'<div class="report-box">{apply_decoration(cleaned_analysis)}</div>', unsafe_allow_html=True)
+    
     with tab2: flexible_display(df_all, "Headline|見出し", "② 広告見出し15案")
     with tab3: flexible_display(df_all, "Description|説明文", "③ 広告説明文4案")
+    
     with tab4:
         st.markdown(apply_decoration("④ キーワード戦略（20個・マッチタイプ別）"), unsafe_allow_html=True)
         if df_all is not None:
@@ -205,5 +208,6 @@ if st.session_state.ad_result:
                 if "ターゲット" in str(row['Details']) or not row['Details']:
                     sub.at[idx, 'Details'] = "部分一致" if "部分" in h else "フレーズ一致" if "フレーズ" in h else "完全一致" if "完全" in h else "部分一致"
             st.table(sub[["Content", "Details", "Other1"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ", "Other1": "入札戦略・理由"}))
-    with tab5: flexible_display(df_all, "Snippet|スニペット|構造化", "⑤ 構造化スニペット", is_asset=True)
+    
+    with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット", is_asset=True)
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット", is_asset=True)
