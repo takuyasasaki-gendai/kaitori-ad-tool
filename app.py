@@ -7,6 +7,7 @@ import io
 import re
 import subprocess
 import requests
+import time
 import google.generativeai as genai
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -57,8 +58,6 @@ with st.sidebar:
     st.success("認証済み")
 
 # --- 4. 思考プロセス解説 ---
-st.title("Google広告プラン自動生成ツール")
-
 st.markdown("""
 <div class="logic-box">
 <h3>⚙️ 広告プラン構築の思考プロセス</h3>
@@ -77,8 +76,7 @@ def clean_text(text):
     return str(text).replace("**", "").replace("###", "").replace("`", "").replace('"', '').strip()
 
 def translate_match_type(text):
-    """マッチタイプの英語表記を日本語に変換"""
-    text = text.lower()
+    text = str(text).lower()
     if "exact" in text: return "完全一致"
     if "phrase" in text: return "フレーズ一致"
     if "broad" in text: return "部分一致"
@@ -93,9 +91,7 @@ def apply_decoration(text):
 
 def flexible_display(df, filter_keywords, label, is_asset=False):
     st.markdown(apply_decoration(label), unsafe_allow_html=True)
-    if df is None or df.empty:
-        st.write("（データが存在しません）")
-        return
+    if df is None or df.empty: return
     mask = df['Type'].astype(str).str.contains(filter_keywords, case=False, na=False, regex=True)
     sub_df = df[mask].copy()
     for i, (_, row) in enumerate(sub_df.iterrows(), 1):
@@ -109,7 +105,7 @@ def flexible_display(df, filter_keywords, label, is_asset=False):
                 with st.popover("💡 詳細"): st.write(display_details if display_details else "戦略的最適化済み")
         else: cols[2].write("✅ WIN")
 
-# --- 6. スクレイピング ---
+# --- 6. スクレイピング & AI生成 (429エラー対策) ---
 async def fetch_content(url):
     try:
         async with async_playwright() as p:
@@ -118,37 +114,37 @@ async def fetch_content(url):
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             html = await page.content()
             await browser.close()
-            soup = BeautifulSoup(html, "html.parser")
+            return " ".join(BeautifulSoup(html, "html.parser").get_text(separator=" ").split())[:4000]
     except:
         try:
             resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            soup = BeautifulSoup(resp.text, "html.parser")
+            return " ".join(BeautifulSoup(resp.text, "html.parser").get_text(separator=" ").split())[:4000]
         except: return None
-    if soup:
-        for s in soup(["script", "style", "nav", "footer"]): s.decompose()
-        return " ".join(soup.get_text(separator=" ").split())[:4000]
-    return None
 
 def generate_ad_plan(site_text, api_key):
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        prompt = f"""
-        Google広告プランを作成してください。
-        【重要】キーワードのマッチタイプは必ず「完全一致」「フレーズ一致」「部分一致」の日本語で出力してください。
-        
-        1. サイト解析（①強み ②課題 ③改善案）
-        2. [DATA_START] カラム(Type,Content,Details,Other1,Other2,Status,Hint)のCSV [DATA_END]
-        
-        Headline: 15, Description: 4, Keyword: 20(Detailsに日本語マッチタイプ, Other1に理由), Snippet: 3, Callout: 10。
-        
-        内容: {site_text}
-        """
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e: return f"AIエラー: {str(e)}"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-3-flash") 
+            prompt = f"""
+            Google広告プランを日本語で作成してください。
+            1. サイト解析（①強み ②課題 ③改善案）
+            2. [DATA_START] カラム(Type,Content,Details,Other1,Other2,Status,Hint)のCSV [DATA_END]
+            Headline:15, Description:4, Keyword:20(日本語マッチタイプ), Snippet:3, Callout:10。
+            サイト内容: {site_text}
+            """
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                st.warning(f"混雑しています。{5}秒後に再試行します...")
+                time.sleep(5)
+                continue
+            return f"AIエラー: {str(e)}"
 
 # --- 7. 実行エリア ---
+st.title("Google広告プラン自動生成ツール")
 input_mode = st.radio("入力方法", ["URL読み込み", "直接入力"])
 raw_text = ""
 
@@ -163,11 +159,11 @@ else:
     if st.button("生成開始"): pass
 
 if raw_text:
-    with st.spinner("🚀 戦略プランを構築中..."):
+    with st.spinner("🚀 プランを構築中..."):
         st.session_state.ad_result = generate_ad_plan(raw_text, api_key)
         st.balloons()
 
-# --- 8. 表示 & 表記調整 ---
+# --- 8. 表示 & 出力 ---
 if st.session_state.ad_result:
     res = st.session_state.ad_result
     analysis_raw = res.split("[DATA_START]")[0].strip()
@@ -185,25 +181,24 @@ if st.session_state.ad_result:
             if len(parts) >= 2:
                 while len(parts) < 7: parts.append("")
                 parsed_rows.append(parts[:7])
+        
         if parsed_rows:
-            df_all = pd.DataFrame(parsed_rows, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).applymap(clean_text)
+            # AttributeError回避: applymap -> map に変更
+            df_all = pd.DataFrame(parsed_rows, columns=["Type", "Content", "Details", "Other1", "Other2", "Status", "Hint"]).map(clean_text)
 
-    # Excelダウンロード
+    # Excelダウンロード & 表示
     if df_all is not None:
+        # マッチタイプを日本語化
+        df_all.loc[df_all['Type'].str.contains('Keyword', case=False), 'Details'] = \
+            df_all.loc[df_all['Type'].str.contains('Keyword', case=False), 'Details'].apply(translate_match_type)
+        
         try:
-            # ダウンロード前にキーワードのマッチタイプを日本語化
-            df_all.loc[df_all['Type'].str.contains('Keyword', case=False), 'Details'] = \
-                df_all.loc[df_all['Type'].str.contains('Keyword', case=False), 'Details'].apply(translate_match_type)
-            
             excel_io = io.BytesIO()
             with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
                 pd.DataFrame([["① 解析結果", cleaned_analysis]], columns=["項目", "内容"]).to_excel(writer, index=False, sheet_name="1_解析")
-                maps = [("Headline", "2_見出し"), ("Description", "3_説明文"), ("Keyword", "4_キーワード"), ("Snippet", "5_スニペット"), ("Callout", "6_コールアウト")]
-                for key, s_name in maps:
+                for key, s_name in [("Headline", "2_見出し"), ("Description", "3_説明文"), ("Keyword", "4_キーワード"), ("Snippet", "5_スニペット"), ("Callout", "6_コールアウト")]:
                     sub = df_all[df_all['Type'].astype(str).str.contains(key, case=False, na=False)].copy()
-                    if not sub.empty:
-                        sub.index = range(1, len(sub) + 1)
-                        sub.to_excel(writer, index=True, index_label="No", sheet_name=s_name)
+                    if not sub.empty: sub.to_excel(writer, index=False, sheet_name=s_name)
             st.download_button(label="📊 Excelでダウンロード", data=excel_io.getvalue(), file_name="google_ad_plan.xlsx")
         except: pass
 
@@ -215,9 +210,6 @@ if st.session_state.ad_result:
         st.markdown(apply_decoration("④ キーワード戦略（20個）"), unsafe_allow_html=True)
         if df_all is not None:
             sub = df_all[df_all['Type'].astype(str).str.contains("Keyword|キーワード", case=False, na=False)].copy()
-            for idx, row in sub.iterrows():
-                # ここで日本語へ変換
-                sub.at[idx, 'Details'] = translate_match_type(str(row['Details']))
             st.table(sub[["Content", "Details", "Other1"]].rename(columns={"Content": "キーワード", "Details": "マッチタイプ", "Other1": "入札戦略・理由"}))
-    with tab5: flexible_display(df_all, "Snippet|スニペット", "⑤ 構造化スニペット", is_asset=True)
+    with tab5: flexible_display(df_all, "Snippet|スニペット|構造化", "⑤ 構造化スニペット", is_asset=True)
     with tab6: flexible_display(df_all, "Callout|コールアウト", "⑥ コールアウトアセット", is_asset=True)
